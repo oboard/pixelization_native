@@ -7,7 +7,7 @@ High-performance, pure CPU, Rust native binary Pixel Art engine. Port of [WuZong
 - **Pure CPU inference** via ONNX Runtime
 - **Dynamic input size** - any image size divisible by 4
 - **Cross-platform** - macOS (ARM64/x86_64), Linux (ARM64/x86_64), Windows (x86_64)
-- **High fidelity** - PSNR 48.90 dB vs PyTorch reference
+- **High fidelity** - matches upstream PyTorch output (max error ~1/255 on verified sample)
 - **Fast** - ~1.5s for 512x512 image on 4 threads (Apple Silicon)
 
 ## Quick Start
@@ -21,20 +21,40 @@ High-performance, pure CPU, Rust native binary Pixel Art engine. Port of [WuZong
 #   alias_net.pth (34 MB)
 ```
 
-### 2. Export ONNX Model
+### 2. Set Up Python Tooling with uv
+
+Install uv if needed:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install torch onnx onnxruntime scikit-image
-
-python export/export_onnx.py \
-    --generator checkpoints/160_net_G_A.pth \
-    --alias alias_net.pth \
-    --output models/pixelization.onnx
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### 3. Run
+Then sync dependencies:
+
+```bash
+scripts/setup_python_env.sh
+# or directly:
+uv sync
+```
+
+### 3. Export ONNX Model
+
+Export the upstream-exact dynamic-shape model:
+
+```bash
+uv run python export/export_onnx.py \
+    --generator checkpoints/160_net_G_A.pth \
+    --alias alias_net.pth \
+    --output models/pixelization_upstream_exact.onnx
+```
+
+Optionally make it the default model path used by the CLI:
+
+```bash
+ln -sf pixelization_upstream_exact.onnx models/pixelization.onnx
+```
+
+### 4. Run
 
 ```bash
 # Build
@@ -93,6 +113,12 @@ cargo test
 
 # Integration tests (requires model)
 PIXELIZATION_MODEL=models/pixelization.onnx cargo test --test integration
+
+# Export / validation Python tools
+uv run python export/export_onnx.py \
+  --generator checkpoints/160_net_G_A.pth \
+  --alias alias_net.pth \
+  --output models/pixelization_upstream_exact.onnx
 
 # Benchmarks
 PIXELIZATION_MODEL=models/pixelization.onnx cargo bench

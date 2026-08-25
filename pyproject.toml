@@ -1,0 +1,17 @@
+[project]
+name = "pixelization-native-export"
+version = "0.1.0"
+description = "Python tooling for exporting and validating the Pixelization ONNX model."
+requires-python = ">=3.11"
+dependencies = [
+  "numpy",
+  "pillow",
+  "torch",
+  "torchvision",
+  "onnx",
+  "onnxruntime",
+  "scikit-image",
+]
+
+[tool.uv]
+package = false

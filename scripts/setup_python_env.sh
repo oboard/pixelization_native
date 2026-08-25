@@ -2,37 +2,39 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VENV="$ROOT/.venv"
+cd "$ROOT"
 
-echo "[setup] creating venv at $VENV"
-python3 -m venv "$VENV"
-source "$VENV/bin/activate"
-python -m pip install --upgrade pip wheel setuptools
-python -m pip install -r "$ROOT/export/requirements.txt"
+if ! command -v uv >/dev/null 2>&1; then
+  cat >&2 <<'MSG'
+[setup] uv is not installed.
+
+Install uv first:
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+
+Then rerun:
+  scripts/setup_python_env.sh
+MSG
+  exit 1
+fi
+
+echo "[setup] syncing Python environment with uv"
+uv sync
 
 echo
 cat <<MSG
 [setup] Python ML environment ready.
 
-Activate it with:
-  source "$VENV/bin/activate"
+Run Python tools with uv, for example:
 
-Next steps:
-  1. Download upstream checkpoints into:
-       alias_net.pth
-       checkpoints/YOUR_MODEL_NAME/160_net_G_A.pth
-     (Optionally keep 160_net_G_B.pth and pixelart_vgg19.pth beside them for audit/reference.)
+  uv run python export/export_onnx.py \
+    --generator checkpoints/160_net_G_A.pth \
+    --alias alias_net.pth \
+    --output models/pixelization_upstream_exact.onnx
 
-  2. Export ONNX:
-       python export/export_onnx.py \
-         --generator checkpoints/YOUR_MODEL_NAME/160_net_G_A.pth \
-         --alias alias_net.pth \
-         --output models/pixelization.onnx
+Weights expected locally (ignored by Git):
+  alias_net.pth
+  checkpoints/160_net_G_A.pth
 
-  3. Validate parity on >=20 images:
-       python export/validate_parity.py \
-         --generator checkpoints/YOUR_MODEL_NAME/160_net_G_A.pth \
-         --alias alias_net.pth \
-         --onnx models/pixelization.onnx \
-         --images ./test-images
+Optional only for running upstream test_pro.py directly:
+  pixelart_vgg19.pth
 MSG

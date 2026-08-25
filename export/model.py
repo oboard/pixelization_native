@@ -1,31 +1,23 @@
-"""Minimal, test_pro-faithful Pixelization inference graph.
+"""Self-contained, test_pro-faithful Pixelization inference graph.
 
-Exactly replicates the live ``test_pro.py`` neural path:
+This file intentionally does NOT import from the upstream repository. It embeds the
+minimal network definitions needed to export the Test Pro inference path:
 
     RGBEnc → RGBDec(fixed cell_size_code [1,2048]) → AliasNet
 
 Excluded intentionally:
-  - PBEnc / VGG-19 structure extractor  (constructor dep; never forwarded by Test Pro)
-  - C2PGen.forward  (calls PBEnc)
-  - P2CGen / P2INet  (CycleGAN reverse direction)
-  - Discriminators  (training only)
-  - prepare_data.py / test.py CycleGAN flow
+  - PBEnc / VGG-19 structure extractor  (constructor dep in upstream; never used
+    by Test Pro's forwarded inference path)
+  - C2PGen.forward / P2CGen / P2INet / discriminators / training code
 
-ModulationConvBlock note:
-  The upstream implementation uses ``F.conv2d`` with ``groups=batch``.
-  For batch=1 (the only exported shape) ``groups=1``, so ``torch.onnx.export``
-  traces it as a standard convolution with no dynamic batch dependency.
-  Do NOT attempt to export batch > 1 — it would produce wrong groups.
-
-cell_size_code note:
-  Computed once from the frozen 256-float MLP_CODE vector via the MLP sub-network.
-  Result is [1, 2048] stored as a buffer.  RGBDecoder slices it in 8×256 chunks,
-  one per ModulationConvBlock.  This is entirely constant at export time and becomes
-  an ONNX initializer after ``do_constant_folding=True``.
+Important upstream quirks reproduced exactly:
+  - RGBDecoder.forward defines mod_conv_1..8 but actually calls mod_conv_2 for
+    chunks 2..8 in upstream test_pro.py's model code.
+  - ModulationConvBlock's raw OIHW → [1,k,k,in,out] view/permute layout is
+    preserved for batch=1; it is not equivalent to ordinary OIHW channel scaling.
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Mapping
 
@@ -33,16 +25,9 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
-UPSTREAM_ROOT = Path(__file__).resolve().parents[1] / "upstream"
-if str(UPSTREAM_ROOT) not in sys.path:
-    sys.path.insert(0, str(UPSTREAM_ROOT))
-
-from models.c2pGen import AliasNet, RGBEncoder  # noqa: E402
-from models.basic_layer import MLP, ConvBlock  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Frozen cell-size-4 MLP input code.  Copied verbatim from test_pro.py:24-77.
-# Do not modify; the trained generator was specialised for this vector.
+# Frozen cell-size-4 MLP input code. Copied verbatim from upstream test_pro.py.
 # ---------------------------------------------------------------------------
 MLP_CODE: list[float] = [
     233356.8125, -27387.5918, -32866.8008, 126575.0312, -181590.0156, -31543.1289, 50374.1289, 99631.4062,
@@ -82,10 +67,6 @@ MLP_CODE: list[float] = [
 assert len(MLP_CODE) == 256, f"MLP_CODE length must be 256, got {len(MLP_CODE)}"
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _strip_module(state: Mapping[str, Tensor]) -> dict[str, Tensor]:
     """Remove DataParallel ``module.`` prefix from state dict keys."""
     return {key.removeprefix("module."): value for key, value in state.items()}
@@ -96,41 +77,221 @@ def _substate(state: dict[str, Tensor], prefix: str) -> dict[str, Tensor]:
     return {key[len(prefix):]: value for key, value in state.items() if key.startswith(prefix)}
 
 
-# ---------------------------------------------------------------------------
-# Batch-1 specialized ModulationConvBlock for ONNX export
-# ---------------------------------------------------------------------------
+class LayerNorm(nn.Module):
+    def __init__(self, num_features: int, eps: float = 1e-5, affine: bool = True) -> None:
+        super().__init__()
+        self.num_features = num_features
+        self.affine = affine
+        self.eps = eps
+        if self.affine:
+            self.gamma = nn.Parameter(torch.Tensor(num_features).uniform_())
+            self.beta = nn.Parameter(torch.zeros(num_features))
+
+    def forward(self, x: Tensor) -> Tensor:
+        shape = [-1] + [1] * (x.dim() - 1)
+        if x.size(0) == 1:
+            mean = x.view(-1).mean().view(*shape)
+            std = x.view(-1).std().view(*shape)
+        else:
+            mean = x.view(x.size(0), -1).mean(1).view(*shape)
+            std = x.view(x.size(0), -1).std(1).view(*shape)
+        x = (x - mean) / (std + self.eps)
+        if self.affine:
+            shape = [1, -1] + [1] * (x.dim() - 2)
+            x = x * self.gamma.view(*shape) + self.beta.view(*shape)
+        return x
+
+
+class ConvBlock(nn.Module):
+    def __init__(self, input_dim: int, output_dim: int, kernel_size: int, stride: int,
+                 padding: int = 0, norm: str = 'none', activation: str = 'relu', pad_type: str = 'zero') -> None:
+        super().__init__()
+        if pad_type == 'reflect':
+            self.pad = nn.ReflectionPad2d(padding)
+        elif pad_type == 'replicate':
+            self.pad = nn.ReplicationPad2d(padding)
+        elif pad_type == 'zero':
+            self.pad = nn.ZeroPad2d(padding)
+        else:
+            raise ValueError(f"Unsupported padding type: {pad_type}")
+
+        if norm == 'bn':
+            self.norm = nn.BatchNorm2d(output_dim)
+        elif norm == 'in':
+            self.norm = nn.InstanceNorm2d(output_dim)
+        elif norm == 'ln':
+            self.norm = LayerNorm(output_dim)
+        elif norm in ('none', 'sn'):
+            self.norm = None
+        else:
+            raise ValueError(f"Unsupported normalization: {norm}")
+
+        if activation == 'relu':
+            self.activation = nn.ReLU(inplace=True)
+        elif activation == 'lrelu':
+            self.activation = nn.LeakyReLU(0.2, inplace=True)
+        elif activation == 'prelu':
+            self.activation = nn.PReLU()
+        elif activation == 'selu':
+            self.activation = nn.SELU(inplace=True)
+        elif activation == 'tanh':
+            self.activation = nn.Tanh()
+        elif activation == 'none':
+            self.activation = None
+        else:
+            raise ValueError(f"Unsupported activation: {activation}")
+
+        self.conv = nn.Conv2d(input_dim, output_dim, kernel_size, stride, bias=True)
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.conv(self.pad(x))
+        if self.norm:
+            x = self.norm(x)
+        if self.activation:
+            x = self.activation(x)
+        return x
+
+
+class AliasConvBlock(ConvBlock):
+    pass
+
+
+class ResBlock(nn.Module):
+    def __init__(self, dim: int, norm: str = 'in', activation: str = 'relu', pad_type: str = 'zero') -> None:
+        super().__init__()
+        self.model = nn.Sequential(
+            ConvBlock(dim, dim, 3, 1, 1, norm=norm, activation=activation, pad_type=pad_type),
+            ConvBlock(dim, dim, 3, 1, 1, norm=norm, activation='none', pad_type=pad_type),
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.model(x) + x
+
+
+class ResBlocks(nn.Module):
+    def __init__(self, num_blocks: int, dim: int, norm: str = 'in', activation: str = 'relu', pad_type: str = 'zero') -> None:
+        super().__init__()
+        self.model = nn.Sequential(*[
+            ResBlock(dim, norm=norm, activation=activation, pad_type=pad_type)
+            for _ in range(num_blocks)
+        ])
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.model(x)
+
+
+class AliasResBlock(nn.Module):
+    def __init__(self, dim: int, norm: str = 'in', activation: str = 'relu', pad_type: str = 'zero') -> None:
+        super().__init__()
+        self.model = nn.Sequential(
+            AliasConvBlock(dim, dim, 3, 1, 1, norm=norm, activation=activation, pad_type=pad_type),
+            AliasConvBlock(dim, dim, 3, 1, 1, norm=norm, activation='none', pad_type=pad_type),
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.model(x) + x
+
+
+class AliasResBlocks(nn.Module):
+    def __init__(self, num_blocks: int, dim: int, norm: str = 'in', activation: str = 'relu', pad_type: str = 'zero') -> None:
+        super().__init__()
+        self.model = nn.Sequential(*[
+            AliasResBlock(dim, norm=norm, activation=activation, pad_type=pad_type)
+            for _ in range(num_blocks)
+        ])
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.model(x)
+
+
+class linearBlock(nn.Module):
+    def __init__(self, input_dim: int, output_dim: int, norm: str = 'none', activation: str = 'relu') -> None:
+        super().__init__()
+        self.fc = nn.Linear(input_dim, output_dim, bias=True)
+        if norm == 'bn':
+            self.norm = nn.BatchNorm1d(output_dim)
+        elif norm == 'in':
+            self.norm = nn.InstanceNorm1d(output_dim)
+        elif norm == 'ln':
+            self.norm = LayerNorm(output_dim)
+        elif norm in ('none', 'sn'):
+            self.norm = None
+        else:
+            raise ValueError(f"Unsupported normalization: {norm}")
+
+        if activation == 'relu':
+            self.activation = nn.ReLU(inplace=True)
+        elif activation == 'lrelu':
+            self.activation = nn.LeakyReLU(0.2, inplace=True)
+        elif activation == 'prelu':
+            self.activation = nn.PReLU()
+        elif activation == 'selu':
+            self.activation = nn.SELU(inplace=True)
+        elif activation == 'tanh':
+            self.activation = nn.Tanh()
+        elif activation == 'none':
+            self.activation = None
+        else:
+            raise ValueError(f"Unsupported activation: {activation}")
+
+    def forward(self, x: Tensor) -> Tensor:
+        out = self.fc(x)
+        if self.norm:
+            out = self.norm(out)
+        if self.activation:
+            out = self.activation(out)
+        return out
+
+
+class MLP(nn.Module):
+    def __init__(self, input_dim: int, output_dim: int, dim: int, n_blk: int, norm: str = 'none', activ: str = 'relu') -> None:
+        super().__init__()
+        layers: list[nn.Module] = [linearBlock(input_dim, input_dim, norm=norm, activation=activ)]
+        layers += [linearBlock(input_dim, dim, norm=norm, activation=activ)]
+        for _ in range(n_blk - 2):
+            layers += [linearBlock(dim, dim, norm=norm, activation=activ)]
+        layers += [linearBlock(dim, output_dim, norm='none', activation='none')]
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, style0: Tensor, style1: Tensor | None = None, a: float = 0) -> Tensor:
+        style1 = style0
+        return self.model[3]((1 - a) * self.model[0:3](style0.view(style0.size(0), -1)) + a * self.model[0:3](style1.view(style1.size(0), -1)))
+
+
+class RGBEncoder(nn.Module):
+    def __init__(self, input_dim: int, dim: int, n_downsample: int, n_res: int, norm: str, activ: str, pad_type: str) -> None:
+        super().__init__()
+        layers: list[nn.Module] = [ConvBlock(input_dim, dim, 7, 1, 3, norm=norm, activation=activ, pad_type=pad_type)]
+        for _ in range(n_downsample):
+            layers += [ConvBlock(dim, 2 * dim, 4, 2, 1, norm=norm, activation=activ, pad_type=pad_type)]
+            dim *= 2
+        layers += [ResBlocks(n_res, dim, norm=norm, activation=activ, pad_type=pad_type)]
+        self.model = nn.Sequential(*layers)
+        self.output_dim = dim
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.model(x)
+
 
 class ModulationConvBlockBatch1(nn.Module):
-    """ModulationConvBlock specialized for batch_size=1, ONNX-export friendly.
-
-    The original upstream implementation uses dynamic batch in weight reshaping
-    and grouped convolution (groups=batch). For batch=1 these collapse to
-    standard convolutions with groups=1, making the graph static and exportable.
-    """
+    """Upstream ModulationConvBlock specialized to batch_size=1 for ONNX export."""
 
     def __init__(self, input_dim: int, output_dim: int, kernel_size: int) -> None:
         super().__init__()
         self.in_c = input_dim
         self.out_c = output_dim
         self.ksize = kernel_size
+        self.stride = 1
         self.padding = kernel_size // 2
         self.eps = 1e-8
-
-        # Match upstream weight initialization
-        weight_shape = (output_dim, input_dim, kernel_size, kernel_size)
         fan_in = kernel_size * kernel_size * input_dim
         self.wscale = 1.0 / (fan_in ** 0.5)
-
-        self.weight = nn.Parameter(torch.randn(*weight_shape))
+        self.weight = nn.Parameter(torch.randn(output_dim, input_dim, kernel_size, kernel_size))
         self.bias = nn.Parameter(torch.zeros(output_dim))
         self.activate = nn.LeakyReLU(negative_slope=0.2, inplace=True)
         self.activate_scale = 2.0 ** 0.5
 
     def forward(self, x: Tensor, code: Tensor) -> Tensor:
-        # x: [1, in_c, H, W], code: [1, in_c]
-        # Match upstream ModulationConvBlock.forward exactly for batch=1.
-        # Important: upstream does a raw memory view from OIHW to [1,k,k,in,out]
-        # before modulation; this is NOT equivalent to ordinary OIHW channel scaling.
         batch = 1
         height = x.shape[2]
         width = x.shape[3]
@@ -140,33 +301,18 @@ class ModulationConvBlockBatch1(nn.Module):
         weight_norm = torch.sqrt(torch.sum(weight ** 2, dim=[1, 2, 3]) + self.eps)
         weight = weight / weight_norm.view(batch, 1, 1, 1, self.out_c)
         x = x.view(1, batch * self.in_c, height, width)
-        weight = weight.permute(1, 2, 3, 0, 4).reshape(
-            self.ksize, self.ksize, self.in_c, batch * self.out_c
-        )
+        weight = weight.permute(1, 2, 3, 0, 4).reshape(self.ksize, self.ksize, self.in_c, batch * self.out_c)
         weight = weight.permute(3, 2, 0, 1)
-        out = F.conv2d(x, weight=weight, bias=None, stride=1, padding=self.padding, groups=batch)
+        out = F.conv2d(x, weight=weight, bias=None, stride=self.stride, padding=self.padding, groups=batch)
         out = out.view(batch, self.out_c, height, width)
         out = out + self.bias.view(1, -1, 1, 1)
         out = self.activate(out) * self.activate_scale
         return out
 
 
-# ---------------------------------------------------------------------------
-# Batch-1 specialized RGBDecoder for ONNX export
-# ---------------------------------------------------------------------------
-
 class RGBDecoderBatch1(nn.Module):
-    """RGBDecoder using batch-1 specialized ModulationConvBlocks.
-
-    Replicates the exact architecture of upstream RGBDecoder with 8 ModConv
-    blocks and 2 nearest-neighbor upsamples, but using the export-friendly
-    ModulationConvBlockBatch1.
-    """
-
-    def __init__(self, dim: int, output_dim: int, n_upsample: int, n_res: int,
-                 res_norm: str, activ: str = 'relu', pad_type: str = 'zero') -> None:
+    def __init__(self, dim: int, output_dim: int, n_upsample: int, n_res: int, res_norm: str, activ: str = 'relu', pad_type: str = 'zero') -> None:
         super().__init__()
-        # 8 ModulationConvBlocks(256, 256, 3) as in upstream RGBDecoder
         self.mod_conv_1 = ModulationConvBlockBatch1(256, 256, 3)
         self.mod_conv_2 = ModulationConvBlockBatch1(256, 256, 3)
         self.mod_conv_3 = ModulationConvBlockBatch1(256, 256, 3)
@@ -175,8 +321,6 @@ class RGBDecoderBatch1(nn.Module):
         self.mod_conv_6 = ModulationConvBlockBatch1(256, 256, 3)
         self.mod_conv_7 = ModulationConvBlockBatch1(256, 256, 3)
         self.mod_conv_8 = ModulationConvBlockBatch1(256, 256, 3)
-
-        # Upsample + conv blocks (same as upstream)
         self.upsample_block1 = nn.Upsample(scale_factor=2, mode='nearest')
         self.conv_1 = ConvBlock(dim, dim // 2, 5, 1, 2, norm='ln', activation=activ, pad_type=pad_type)
         dim //= 2
@@ -186,10 +330,6 @@ class RGBDecoderBatch1(nn.Module):
         self.conv_3 = ConvBlock(dim, output_dim, 7, 1, 3, norm='none', activation='tanh', pad_type=pad_type)
 
     def forward(self, x: Tensor, code: Tensor) -> Tensor:
-        # code: [1, 2048], split into 8 chunks of 256.
-        # Important: match upstream RGBDecoder.forward exactly, including its
-        # repeated use of mod_conv_2 for chunks 3..8. Although mod_conv_3..8 are
-        # defined and present in checkpoints, test_pro.py never calls them.
         residual = x
         x = self.mod_conv_1(x, code[:, :256])
         x = self.mod_conv_2(x, code[:, 256:512])
@@ -206,7 +346,6 @@ class RGBDecoderBatch1(nn.Module):
         x = self.mod_conv_2(x, code[:, 1536:1792])
         x = self.mod_conv_2(x, code[:, 1792:2048])
         x = x + residual
-
         x = self.upsample_block1(x)
         x = self.conv_1(x)
         x = self.upsample_block2(x)
@@ -215,80 +354,87 @@ class RGBDecoderBatch1(nn.Module):
         return x
 
 
-# ---------------------------------------------------------------------------
-# Inference module
-# ---------------------------------------------------------------------------
+class AliasRGBEncoder(nn.Module):
+    def __init__(self, input_dim: int, dim: int, n_downsample: int, n_res: int, norm: str, activ: str, pad_type: str) -> None:
+        super().__init__()
+        layers: list[nn.Module] = [AliasConvBlock(input_dim, dim, 7, 1, 3, norm=norm, activation=activ, pad_type=pad_type)]
+        for _ in range(n_downsample):
+            layers += [AliasConvBlock(dim, 2 * dim, 4, 2, 1, norm=norm, activation=activ, pad_type=pad_type)]
+            dim *= 2
+        layers += [AliasResBlocks(n_res, dim, norm=norm, activation=activ, pad_type=pad_type)]
+        self.model = nn.Sequential(*layers)
+        self.output_dim = dim
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.model(x)
+
+
+class AliasRGBDecoder(nn.Module):
+    def __init__(self, dim: int, output_dim: int, n_upsample: int, n_res: int, res_norm: str, activ: str = 'relu', pad_type: str = 'zero') -> None:
+        super().__init__()
+        self.Res_Blocks = AliasResBlocks(n_res, dim, res_norm, activ, pad_type=pad_type)
+        self.upsample_block1 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.conv_1 = AliasConvBlock(dim, dim // 2, 5, 1, 2, norm='ln', activation=activ, pad_type=pad_type)
+        dim //= 2
+        self.upsample_block2 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.conv_2 = AliasConvBlock(dim, dim // 2, 5, 1, 2, norm='ln', activation=activ, pad_type=pad_type)
+        dim //= 2
+        self.conv_3 = AliasConvBlock(dim, output_dim, 7, 1, 3, norm='none', activation='tanh', pad_type=pad_type)
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.Res_Blocks(x)
+        x = self.upsample_block1(x)
+        x = self.conv_1(x)
+        x = self.upsample_block2(x)
+        x = self.conv_2(x)
+        x = self.conv_3(x)
+        return x
+
+
+class AliasNet(nn.Module):
+    def __init__(self, input_dim: int, output_dim: int, dim: int, n_downsample: int, n_res: int, activ: str = 'relu', pad_type: str = 'reflect') -> None:
+        super().__init__()
+        self.RGBEnc = AliasRGBEncoder(input_dim, dim, n_downsample, n_res, 'in', activ, pad_type=pad_type)
+        self.RGBDec = AliasRGBDecoder(self.RGBEnc.output_dim, output_dim, n_downsample, n_res, res_norm='in', activ=activ, pad_type=pad_type)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.RGBDec(self.RGBEnc(x))
+
 
 class TestProInference(nn.Module):
-    """Exact ``test_pro.py`` neural path, exportable to ONNX at batch=1.
-
-    Architecture:
-        input [1,3,H,W] ∈ [-1,1]
-        → RGBEncoder  (7×7 conv + 2 stride-2 downsamples + 4 residual blocks)
-        → [1,256,H/4,W/4]
-        → RGBDecoder  (8 ModulationConvBlocks with fixed code + 2× nearest upsample)
-        → [1,3,H,W]
-        → AliasNet    (enc-dec with residual blocks, anti-alias refinement)
-        → [1,3,H,W] ∈ [-1,1]
-
-    The ``cell_size_code`` buffer is a [1,2048] constant derived from MLP_CODE and
-    becomes an ONNX initializer after constant folding.
-    """
+    """Exact upstream test_pro.py neural path, exportable to ONNX at batch=1."""
 
     def __init__(self, generator_checkpoint: Path, alias_checkpoint: Path) -> None:
         super().__init__()
+        self.rgb_encoder = RGBEncoder(3, 64, 2, 4, 'in', 'relu', pad_type='reflect')
+        self.rgb_decoder = RGBDecoderBatch1(256, 3, 2, 4, res_norm='adain', activ='relu', pad_type='reflect')
+        self.alias = AliasNet(3, 3, 64, 2, 3, activ='relu', pad_type='reflect')
+        mlp = MLP(256, 2048, 256, 3, norm='none', activ='relu')
 
-        # --- Build submodules matching C2PGen(input=3, output=3, dim=64, n_downsample=2, n_res=4) ---
-        self.rgb_encoder = RGBEncoder(
-            input_dim=3, dim=64, n_downsample=2, n_res=4, norm="in", activ="relu", pad_type="reflect"
-        )
-        # Use batch-1 specialized decoder for ONNX export
-        self.rgb_decoder = RGBDecoderBatch1(
-            dim=256, output_dim=3, n_upsample=2, n_res=4, res_norm="adain", activ="relu", pad_type="reflect"
-        )
-        self.alias = AliasNet(input_dim=3, output_dim=3, dim=64, n_downsample=2, n_res=3, activ="relu", pad_type="reflect")
-        mlp = MLP(input_dim=256, output_dim=2048, dim=256, n_blk=3, norm="none", activ="relu")
-
-        # --- Load generator checkpoint (160_net_G_A.pth) ---
-        gen_state = _strip_module(
-            torch.load(generator_checkpoint, map_location="cpu", weights_only=True)
-        )
-        self.rgb_encoder.load_state_dict(_substate(gen_state, "RGBEnc."), strict=True)
-        # Load RGBDecoder weights into the batch-1 specialized decoder
-        # Map upstream mod_conv_1..8.weight/bias to our mod_conv_1..8
-        dec_state = {}
+        gen_state = _strip_module(torch.load(generator_checkpoint, map_location='cpu', weights_only=True))
+        self.rgb_encoder.load_state_dict(_substate(gen_state, 'RGBEnc.'), strict=True)
+        dec_state: dict[str, Tensor] = {}
         for i in range(1, 9):
-            for p in ("weight", "bias"):
-                key = f"RGBDec.mod_conv_{i}.{p}"
+            for p in ('weight', 'bias'):
+                key = f'RGBDec.mod_conv_{i}.{p}'
                 if key in gen_state:
-                    dec_state[f"mod_conv_{i}.{p}"] = gen_state[key]
-        # Also copy conv_1, conv_2, conv_3 from upstream
+                    dec_state[f'mod_conv_{i}.{p}'] = gen_state[key]
         for name, param in gen_state.items():
-            if name.startswith("RGBDec.conv_"):
-                dec_state[name[7:]] = param  # strip "RGBDec."
+            if name.startswith('RGBDec.conv_'):
+                dec_state[name[7:]] = param
         self.rgb_decoder.load_state_dict(dec_state, strict=True)
-        mlp.load_state_dict(_substate(gen_state, "MLP."), strict=True)
+        mlp.load_state_dict(_substate(gen_state, 'MLP.'), strict=True)
 
-        # --- Load alias_net.pth ---
-        alias_state = _strip_module(
-            torch.load(alias_checkpoint, map_location="cpu", weights_only=True)
-        )
+        alias_state = _strip_module(torch.load(alias_checkpoint, map_location='cpu', weights_only=True))
         self.alias.load_state_dict(alias_state, strict=True)
 
-        # --- Pre-compute constant cell_size_code: MLP(code) → [1,2048] ---
         code = torch.tensor(MLP_CODE, dtype=torch.float32).reshape(1, 256, 1, 1)
         with torch.inference_mode():
             cell_size_code = mlp(code)
         assert cell_size_code.shape == (1, 2048), cell_size_code.shape
-        self.register_buffer("cell_size_code", cell_size_code, persistent=True)
+        self.register_buffer('cell_size_code', cell_size_code, persistent=True)
 
     def forward(self, image: Tensor) -> Tensor:
-        """
-        Args:
-            image: [1, 3, H, W] float32, values in [-1, 1]
-        Returns:
-            [1, 3, H, W] float32, values in [-1, 1]
-        """
         feat = self.rgb_encoder(image)
         decoded = self.rgb_decoder(feat, self.cell_size_code)
         return self.alias(decoded)
