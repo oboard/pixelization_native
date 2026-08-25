@@ -22,7 +22,8 @@ __pycache__/
 *.pth
 /checkpoints/
 
-# Generated validation / benchmark outputs
+# Local datasets and generated validation / benchmark outputs
+/data/
 /outputs/
 /output_test/
 /upstream_outputs/
@@ -40,3 +41,5 @@ __pycache__/
 # Editor / IDE
 .idea/
 .vscode/
+
+data/
