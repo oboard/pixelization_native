@@ -1,0 +1,41 @@
+# Rust build outputs
+/target/
+**/*.rs.bk
+
+# Python virtualenv / caches
+/.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Native / Python generated model artifacts
+/models/*.onnx
+/models/*.ort
+/models/*.json
+/models/parity-diff/
+/models/parity-report.json
+
+# Checkpoints and downloaded weights (do not commit; upstream is non-commercial research only)
+*.pth
+/checkpoints/
+
+# Generated validation / benchmark outputs
+/output_test/
+/upstream_outputs/
+/reference-output/
+/test_images/
+
+# Vendored / cloned upstream repo used only for inspection and local parity runs
+/upstream/
+
+# Logs and temporary files
+*.log
+*.tmp
+.DS_Store
+
+# Editor / IDE
+.idea/
+.vscode/

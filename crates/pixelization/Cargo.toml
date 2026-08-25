@@ -1,0 +1,24 @@
+[package]
+name = "pixelization"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+image.workspace = true
+fast_image_resize.workspace = true
+rayon.workspace = true
+ort.workspace = true
+ndarray.workspace = true
+
+[dev-dependencies]
+criterion = "0.5"
+tempfile = "3.15"
+
+[[bench]]
+name = "inference"
+harness = false

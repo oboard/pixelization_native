@@ -1,0 +1,7 @@
+numpy
+pillow
+torch
+torchvision
+onnx
+onnxruntime
+scikit-image
