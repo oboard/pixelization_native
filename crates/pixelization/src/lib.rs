@@ -24,7 +24,7 @@ pub mod preprocess;
 
 pub use error::PixelizationError;
 
-use std::{path::Path, sync::Mutex};
+use std::{path::Path, sync::Mutex, time::{Duration, Instant}};
 
 use anyhow::{Context, Result};
 use fast_image_resize as fr;
@@ -51,6 +51,15 @@ impl Default for PixelizeOptions {
     fn default() -> Self {
         Self { cell_size: 4 }
     }
+}
+
+/// Detailed timings for one low-resolution inference pass.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PixelizeTimings {
+    pub preprocess: Duration,
+    pub inference: Duration,
+    pub postprocess: Duration,
+    pub total: Duration,
 }
 
 /// An image-to-pixel-art CPU inference engine backed by ONNX Runtime.
@@ -179,6 +188,64 @@ impl Pixelizer {
             *pixel = image::Rgba([c[0], c[1], c[2], alpha.get_pixel(x, y)[0]]);
         }
         Ok(DynamicImage::ImageRgba8(output))
+    }
+
+    /// Pixelize using an explicit square neural-network input resolution.
+    ///
+    /// This is intended for low-resolution pixel-art experiments where the final
+    /// pixel-art canvas is itself small (for example 128×128, 56×56, or 32×32).
+    /// The input image is first bicubic-resized to `resolution × resolution`, the
+    /// unchanged FP32 ONNX model is run at that size, then the model output is
+    /// nearest-neighbor downsampled by the trained 4-px lattice and nearest-neighbor
+    /// upsampled back to `resolution × resolution`.
+    pub fn process_lowres_square_timed(
+        &self,
+        image: &DynamicImage,
+        resolution: u32,
+    ) -> Result<(DynamicImage, PixelizeTimings)> {
+        if resolution == 0 || resolution % BEST_CELL_SIZE != 0 {
+            return Err(PixelizationError::EmptyGrid.into());
+        }
+
+        let total_start = Instant::now();
+        let preprocess_start = Instant::now();
+        let source = image.to_rgba8();
+        let model_input = resize_rgba_bicubic(&source, resolution, resolution)?;
+        let nchw = rgba_to_normalized_nchw(&model_input);
+        let preprocess = preprocess_start.elapsed();
+
+        let inference_start = Instant::now();
+        let output_tensor = self.infer(nchw)?;
+        let inference = inference_start.elapsed();
+
+        let postprocess_start = Instant::now();
+        let generated = tensor_to_rgb(output_tensor)?;
+        let grid_w = resolution / BEST_CELL_SIZE;
+        let grid_h = resolution / BEST_CELL_SIZE;
+        let grid = resize_rgb_nearest(&generated, grid_w, grid_h)?;
+        let rgb = resize_rgb_nearest(&grid, resolution, resolution)?;
+
+        let alpha = extract_alpha(&model_input);
+        let alpha = resize_gray_nearest(&alpha, grid_w, grid_h)?;
+        let alpha = resize_gray_nearest(&alpha, resolution, resolution)?;
+
+        let mut output = RgbaImage::new(resolution, resolution);
+        for (x, y, pixel) in output.enumerate_pixels_mut() {
+            let c = rgb.get_pixel(x, y);
+            *pixel = image::Rgba([c[0], c[1], c[2], alpha.get_pixel(x, y)[0]]);
+        }
+        let postprocess = postprocess_start.elapsed();
+        let total = total_start.elapsed();
+
+        Ok((
+            DynamicImage::ImageRgba8(output),
+            PixelizeTimings {
+                preprocess,
+                inference,
+                postprocess,
+                total,
+            },
+        ))
     }
 
     fn infer(&self, input: Array4<f32>) -> Result<ndarray::ArrayD<f32>> {

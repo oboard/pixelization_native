@@ -815,6 +815,7 @@ dependencies = [
  "anyhow",
  "clap",
  "image",
+ "libc",
  "pixelization",
  "walkdir",
 ]

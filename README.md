@@ -45,13 +45,7 @@ Export the upstream-exact dynamic-shape model:
 uv run python export/export_onnx.py \
     --generator checkpoints/160_net_G_A.pth \
     --alias alias_net.pth \
-    --output models/pixelization_upstream_exact.onnx
-```
-
-Optionally make it the default model path used by the CLI:
-
-```bash
-ln -sf pixelization_upstream_exact.onnx models/pixelization.onnx
+    --output models/pixelization.onnx
 ```
 
 ### 4. Run
@@ -118,7 +112,7 @@ PIXELIZATION_MODEL=models/pixelization.onnx cargo test --test integration
 uv run python export/export_onnx.py \
   --generator checkpoints/160_net_G_A.pth \
   --alias alias_net.pth \
-  --output models/pixelization_upstream_exact.onnx
+  --output models/pixelization.onnx
 
 # Benchmarks
 PIXELIZATION_MODEL=models/pixelization.onnx cargo bench

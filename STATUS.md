@@ -78,7 +78,7 @@ Output pixel-art RGBA
 - `export/compare_pytorch_rust.py` - Full pipeline comparison
 
 ### Models
-- `models/pixelization_upstream_exact.onnx` - Upstream-exact dynamic-shape model (76 MB, generated locally; ignored by Git)
+- `models/pixelization.onnx` - Upstream-exact dynamic-shape model (76 MB, generated locally; ignored by Git)
 - `models/pixelization.onnx` - Optional symlink/copy to the upstream-exact model for CLI default usage
 
 ### Weights (not redistributed)
@@ -91,14 +91,14 @@ Output pixel-art RGBA
 ```bash
 # Single image
 cargo run --release -p pixelization-cli -- \
-    --model models/pixelization_upstream_exact.onnx \
+    --model models/pixelization.onnx \
     --cell-size 4 \
     --threads 4 \
     input.png output.png
 
 # Batch processing
 cargo run --release -p pixelization-cli -- \
-    --model models/pixelization_upstream_exact.onnx \
+    --model models/pixelization.onnx \
     ./input_dir ./output_dir
 ```
 
@@ -114,7 +114,7 @@ cargo run --release -p pixelization-cli -- \
 cargo test -p pixelization
 
 # Integration tests (requires model)
-PIXELIZATION_MODEL=../../models/pixelization_upstream_exact.onnx \
+PIXELIZATION_MODEL=../../models/pixelization.onnx \
     cargo test -p pixelization --test integration
 
 # Python dependencies / tools are managed by uv
@@ -124,7 +124,7 @@ uv sync
 uv run python export/export_onnx.py \
     --generator checkpoints/160_net_G_A.pth \
     --alias alias_net.pth \
-    --output models/pixelization_upstream_exact.onnx
+    --output models/pixelization.onnx
 
 # Parity validation
 uv run python export/quick_parity.py \

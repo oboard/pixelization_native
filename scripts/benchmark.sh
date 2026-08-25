@@ -4,7 +4,7 @@
 
 set -e
 
-MODEL="${1:-models/pixelization_dynamic.onnx}"
+MODEL="${1:-models/pixelization.onnx}"
 THREADS="${2:-1 2 4 8}"
 TEST_IMAGE="test_images/test_1.png"
 

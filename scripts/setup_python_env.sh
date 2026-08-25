@@ -29,7 +29,7 @@ Run Python tools with uv, for example:
   uv run python export/export_onnx.py \
     --generator checkpoints/160_net_G_A.pth \
     --alias alias_net.pth \
-    --output models/pixelization_upstream_exact.onnx
+    --output models/pixelization.onnx
 
 Weights expected locally (ignored by Git):
   alias_net.pth

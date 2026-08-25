@@ -19,4 +19,5 @@ ort = { version = "2.0.0-rc.10", default-features = false, features = ["std", "n
 ndarray = "0.17"
 clap = { version = "4.5", features = ["derive"] }
 walkdir = "2.5"
+libc = "0.2"
 

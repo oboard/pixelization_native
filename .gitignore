@@ -23,6 +23,7 @@ __pycache__/
 /checkpoints/
 
 # Generated validation / benchmark outputs
+/outputs/
 /output_test/
 /upstream_outputs/
 /reference-output/
