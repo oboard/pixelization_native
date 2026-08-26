@@ -22,14 +22,18 @@ from model import TestProInference
 EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
 
-def preprocess(path: Path, resolution: int) -> torch.Tensor:
+def aspect_size(w: int, h: int, long_edge: int) -> tuple[int, int]:
+    if w >= h:
+        short = max(4, round((h * long_edge / w) / 4) * 4)
+        return long_edge, short
+    short = max(4, round((w * long_edge / h) / 4) * 4)
+    return short, long_edge
+
+
+def preprocess(path: Path, long_edge: int) -> torch.Tensor:
     img = Image.open(path).convert("RGB")
-    w, h = img.size
-    side = min(w, h)
-    left = max(0, (w - side) // 2)
-    top = max(0, (h - side) // 2)
-    img = img.crop((left, top, left + side, top + side))
-    img = img.resize((resolution, resolution), Image.Resampling.BICUBIC)
+    tw, th = aspect_size(*img.size, long_edge)
+    img = img.resize((tw, th), Image.Resampling.BICUBIC)
     return (TF.to_tensor(img) * 2.0 - 1.0).unsqueeze(0)
 
 
@@ -58,14 +62,17 @@ def main() -> None:
     parser.add_argument("--generator", type=Path, default=Path("checkpoints/160_net_G_A.pth"))
     parser.add_argument("--alias", type=Path, default=Path("alias_net.pth"))
     parser.add_argument("--student", type=Path, required=True, help="Student ONNX model")
-    parser.add_argument("--resolution", type=int, default=128)
+    parser.add_argument("--long-edge", type=int, default=128, help="Final bitmap long edge; must be <=128 and divisible by 4")
+    parser.add_argument("--teacher-scale", type=int, default=4, help="Run teacher at long_edge*scale and nearest-downsample before comparison")
+    parser.add_argument("--resolution", type=int, default=None, help="Deprecated alias for --long-edge")
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/student_validation"))
     parser.add_argument("--report", type=Path, default=Path("outputs/student_validation/report.json"))
     args = parser.parse_args()
 
-    if args.resolution % 4 != 0 or args.resolution > 128:
-        raise SystemExit("--resolution must be divisible by 4 and <=128")
+    long_edge = args.resolution if args.resolution is not None else args.long_edge
+    if long_edge % 4 != 0 or long_edge > 128:
+        raise SystemExit("--long-edge must be divisible by 4 and <=128")
 
     files = [p for p in sorted(args.images.rglob("*")) if p.suffix.lower() in EXTS][: args.limit]
     if not files:
@@ -79,8 +86,10 @@ def main() -> None:
     rows = []
     with torch.inference_mode():
         for file in files:
-            x = preprocess(file, args.resolution)
-            t = teacher(x).cpu().numpy()
+            x = preprocess(file, long_edge)
+            teacher_x = preprocess(file, long_edge * args.teacher_scale)
+            t_high = teacher(teacher_x)
+            t = torch.nn.functional.interpolate(t_high, size=x.shape[-2:], mode="nearest").cpu().numpy()
             s = session.run([output_name], {input_name: x.numpy()})[0]
             t_rgb = tensor_to_rgb(t)
             s_rgb = tensor_to_rgb(s)
@@ -94,13 +103,14 @@ def main() -> None:
                 "mean_abs_error": float(metric_diff.mean()),
             }
             rows.append(row)
-            save_compare(args.output_dir / f"{file.stem}_{args.resolution}.png", t_rgb, s_rgb, abs_diff)
+            save_compare(args.output_dir / f"{file.stem}_{long_edge}.png", t_rgb, s_rgb, abs_diff)
             print(f"{file.name}: PSNR={row['psnr']:.2f} SSIM={row['ssim']:.4f} max={row['max_abs_error']:.4f} mean={row['mean_abs_error']:.4f}")
 
     report = {
         "count": len(rows),
         "student": str(args.student),
-        "resolution": args.resolution,
+        "long_edge": long_edge,
+        "teacher_scale": args.teacher_scale,
         "mean_psnr": float(np.mean([r["psnr"] for r in rows])),
         "mean_ssim": float(np.mean([r["ssim"] for r in rows])),
         "max_abs_error": float(max(r["max_abs_error"] for r in rows)),

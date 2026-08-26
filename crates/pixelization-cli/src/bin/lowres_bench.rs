@@ -23,15 +23,15 @@ struct Args {
     #[arg(long, default_value_t = 50)]
     iterations: usize,
 
-    /// Comma-separated square model input resolutions. Each must be divisible by 4.
+    /// Comma-separated target long-edge model input sizes. Each must be divisible by 4.
     #[arg(long, value_delimiter = ',', default_value = "512,256,128,96,64,56,48,32")]
-    resolutions: Vec<u32>,
+    long_edges: Vec<u32>,
 
     /// Directory for visual low-resolution outputs.
     #[arg(long, default_value = "outputs/lowres")]
     output_dir: PathBuf,
 
-    /// Comma-separated resolutions to save as visual outputs.
+    /// Comma-separated long-edge sizes to save as visual outputs.
     #[arg(long, value_delimiter = ',', default_value = "128,56,32")]
     save_resolutions: Vec<u32>,
 }
@@ -58,9 +58,9 @@ fn main() -> Result<()> {
     if args.iterations == 0 {
         bail!("--iterations must be >= 1");
     }
-    for &r in &args.resolutions {
+    for &r in &args.long_edges {
         if r == 0 || r % 4 != 0 {
-            bail!("resolution must be divisible by 4, got {r}");
+            bail!("long edge must be divisible by 4, got {r}");
         }
     }
 
@@ -75,9 +75,9 @@ fn main() -> Result<()> {
     let mut rows = Vec::new();
     let mut baseline_total = None;
 
-    for &resolution in &args.resolutions {
+    for &resolution in &args.long_edges {
         // One unmeasured warmup pass to populate runtime caches.
-        let _ = pixelizer.process_lowres_square_timed(&image, resolution)?;
+        let _ = pixelizer.process_lowres_long_edge_timed(&image, resolution)?;
 
         let mut preprocess = Vec::with_capacity(args.iterations);
         let mut inference = Vec::with_capacity(args.iterations);
@@ -86,7 +86,7 @@ fn main() -> Result<()> {
 
         let mut saved = false;
         for _ in 0..args.iterations {
-            let (out, timings) = pixelizer.process_lowres_square_timed(&image, resolution)?;
+            let (out, timings) = pixelizer.process_lowres_long_edge_timed(&image, resolution)?;
             preprocess.push(ms(timings.preprocess));
             inference.push(ms(timings.inference));
             postprocess.push(ms(timings.postprocess));
@@ -170,16 +170,16 @@ fn print_report(args: &Args, input: &Path, rows: &[Row]) {
     println!();
     println!("## Summary");
     println!();
-    println!("| Resolution | Inference p50 | Total p50 | Speedup |");
-    println!("|------------|---------------|-----------|---------|");
+    println!("| Long edge | Inference p50 | Total p50 | Speedup |");
+    println!("|-----------|---------------|-----------|---------|");
     for r in rows {
         println!("| {} | {:.2} ms | {:.2} ms | {:.2}× |", r.resolution, r.inference.p50, r.total.p50, r.speedup);
     }
     println!();
     println!("## Detailed timings");
     println!();
-    println!("| Resolution | Preprocess p50/p95 | Inference p50/p95 | Postprocess p50/p95 | Total p50/p95 | Peak RSS |");
-    println!("|------------|--------------------|-------------------|---------------------|---------------|----------|");
+    println!("| Long edge | Preprocess p50/p95 | Inference p50/p95 | Postprocess p50/p95 | Total p50/p95 | Peak RSS |");
+    println!("|-----------|--------------------|-------------------|---------------------|---------------|----------|");
     for r in rows {
         println!(
             "| {} | {:.2}/{:.2} ms | {:.2}/{:.2} ms | {:.2}/{:.2} ms | {:.2}/{:.2} ms | {:.1} MB |",

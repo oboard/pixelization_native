@@ -190,27 +190,28 @@ impl Pixelizer {
         Ok(DynamicImage::ImageRgba8(output))
     }
 
-    /// Pixelize using an explicit square neural-network input resolution.
+    /// Pixelize using an explicit long-edge neural-network input resolution.
     ///
     /// This is intended for low-resolution pixel-art experiments where the final
-    /// pixel-art canvas is itself small (for example 128×128, 56×56, or 32×32).
-    /// The input image is first bicubic-resized to `resolution × resolution`, the
-    /// unchanged FP32 ONNX model is run at that size, then the model output is
-    /// nearest-neighbor downsampled by the trained 4-px lattice and nearest-neighbor
-    /// upsampled back to `resolution × resolution`.
-    pub fn process_lowres_square_timed(
+    /// pixel-art canvas is itself small (for example long edge 128, 56, or 32).
+    /// The input image keeps its aspect ratio, its long edge becomes `long_edge`,
+    /// and both dimensions are snapped to a multiple of the trained 4-px lattice.
+    /// The unchanged FP32 ONNX model is run at that size; postprocess is nearest
+    /// ÷4 then nearest ×4, so the final output keeps the same aspect ratio.
+    pub fn process_lowres_long_edge_timed(
         &self,
         image: &DynamicImage,
-        resolution: u32,
+        long_edge: u32,
     ) -> Result<(DynamicImage, PixelizeTimings)> {
-        if resolution == 0 || resolution % BEST_CELL_SIZE != 0 {
+        if long_edge == 0 || long_edge % BEST_CELL_SIZE != 0 {
             return Err(PixelizationError::EmptyGrid.into());
         }
 
         let total_start = Instant::now();
         let preprocess_start = Instant::now();
         let source = image.to_rgba8();
-        let model_input = resize_rgba_bicubic(&source, resolution, resolution)?;
+        let (target_w, target_h) = lowres_aspect_dims(source.width(), source.height(), long_edge)?;
+        let model_input = resize_rgba_bicubic(&source, target_w, target_h)?;
         let nchw = rgba_to_normalized_nchw(&model_input);
         let preprocess = preprocess_start.elapsed();
 
@@ -219,17 +220,13 @@ impl Pixelizer {
         let inference = inference_start.elapsed();
 
         let postprocess_start = Instant::now();
-        let generated = tensor_to_rgb(output_tensor)?;
-        let grid_w = resolution / BEST_CELL_SIZE;
-        let grid_h = resolution / BEST_CELL_SIZE;
-        let grid = resize_rgb_nearest(&generated, grid_w, grid_h)?;
-        let rgb = resize_rgb_nearest(&grid, resolution, resolution)?;
-
+        // Bitmap mode: the model output pixels are the final pixels. Do not
+        // collapse to a 4px lattice and upscale, otherwise the result becomes
+        // blocks of larger pixels instead of a true low-resolution bitmap.
+        let rgb = tensor_to_rgb(output_tensor)?;
         let alpha = extract_alpha(&model_input);
-        let alpha = resize_gray_nearest(&alpha, grid_w, grid_h)?;
-        let alpha = resize_gray_nearest(&alpha, resolution, resolution)?;
 
-        let mut output = RgbaImage::new(resolution, resolution);
+        let mut output = RgbaImage::new(target_w, target_h);
         for (x, y, pixel) in output.enumerate_pixels_mut() {
             let c = rgb.get_pixel(x, y);
             *pixel = image::Rgba([c[0], c[1], c[2], alpha.get_pixel(x, y)[0]]);
@@ -246,6 +243,17 @@ impl Pixelizer {
                 total,
             },
         ))
+    }
+
+    /// Backwards-compatible square helper for experiments that explicitly want a
+    /// square model canvas.
+    pub fn process_lowres_square_timed(
+        &self,
+        image: &DynamicImage,
+        resolution: u32,
+    ) -> Result<(DynamicImage, PixelizeTimings)> {
+        let square = resize_rgba_bicubic(&image.to_rgba8(), resolution, resolution)?;
+        self.process_lowres_long_edge_timed(&DynamicImage::ImageRgba8(square), resolution)
     }
 
     fn infer(&self, input: Array4<f32>) -> Result<ndarray::ArrayD<f32>> {
@@ -272,6 +280,29 @@ impl Pixelizer {
 // ---------------------------------------------------------------------------
 // Preprocessing helpers
 // ---------------------------------------------------------------------------
+
+fn lowres_aspect_dims(w: u32, h: u32, long_edge: u32) -> Result<(u32, u32)> {
+    if w == 0 || h == 0 || long_edge == 0 || long_edge % BEST_CELL_SIZE != 0 {
+        return Err(PixelizationError::EmptyGrid.into());
+    }
+    let (mut tw, mut th) = if w >= h {
+        let short = ((h as f64 * long_edge as f64 / w as f64) / BEST_CELL_SIZE as f64).round()
+            as u32
+            * BEST_CELL_SIZE;
+        (long_edge, short.max(BEST_CELL_SIZE))
+    } else {
+        let short = ((w as f64 * long_edge as f64 / h as f64) / BEST_CELL_SIZE as f64).round()
+            as u32
+            * BEST_CELL_SIZE;
+        (short.max(BEST_CELL_SIZE), long_edge)
+    };
+    tw = (tw / BEST_CELL_SIZE) * BEST_CELL_SIZE;
+    th = (th / BEST_CELL_SIZE) * BEST_CELL_SIZE;
+    if tw == 0 || th == 0 {
+        return Err(PixelizationError::EmptyGrid.into());
+    }
+    Ok((tw, th))
+}
 
 /// Convert RGBA8 HWC to normalized NCHW f32 in one pass.
 /// Normalization: `(x / 255.0 − 0.5) / 0.5`  ⟺  `x / 127.5 − 1.0`.

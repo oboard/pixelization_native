@@ -1,6 +1,6 @@
 # <10MB Low-resolution Student Model Plan
 
-Goal: specialize Pixelization Native for any-size input to `<=128×128` pixel-art outputs with a deployment ONNX below 10MB.
+Goal: specialize Pixelization Native for any-size input to pixel-art outputs whose **long edge** is `<=128px` while preserving the original aspect ratio, with a deployment ONNX below 10MB.
 
 ## Constraints
 
@@ -17,6 +17,8 @@ Implemented in `export/student_model.py`:
 - Fully convolutional encoder/body/decoder.
 - Default `width=32`, `blocks=4`.
 - Input/output: `[N, 3, H, W]` in `[-1, 1]`.
+- `128`, `56`, `32`, etc. mean target **long edge**, not square canvas size.
+- Host-side preprocessing preserves aspect ratio and snaps both dimensions to multiples of 4.
 - Host-side final nearest-neighbor pixel-grid postprocess remains unchanged.
 
 Parameter budget:
@@ -67,18 +69,21 @@ val/multi_cell/{2..8}:   100 each
 ```
 
 For the first student pass, use `train/non_pixel` for teacher distillation. The
-`multi_cell` directories are useful later as pixel-art style/reference data, but
-are not one-to-one paired with `non_pixel` by filename.
+`multi_cell` directories are unpaired with `non_pixel` by filename, but can now be
+used as a weak pixel-art style prior with `--style-images`.
 
-### Train by distillation
+### Train by distillation + optional multi-cell style prior
 
 ```bash
 uv run python export/train_student.py \
   --images data/pixel_art_split/train/non_pixel \
+  --style-images data/pixel_art/multi_cell \
+  --style-weight 0.03 \
+  --style-lattice-weight 0.02 \
   --generator checkpoints/160_net_G_A.pth \
   --alias alias_net.pth \
   --output checkpoints/student_lowres.pth \
-  --resolution 128 \
+  --long-edge 128 \
   --width 32 \
   --blocks 4 \
   --steps 20000 \
@@ -93,7 +98,7 @@ The teacher is the upstream-exact model in `export/model.py`; no upstream source
 uv run python export/validate_student.py \
   --images /path/to/validation/images \
   --student models/pixelization_student.onnx \
-  --resolution 128 \
+  --long-edge 128 \
   --limit 20 \
   --output-dir outputs/student_validation \
   --report outputs/student_validation/report.json
@@ -106,7 +111,7 @@ target/release/lowres-bench \
   --model models/pixelization_student.onnx \
   --threads 4 \
   --iterations 50 \
-  --resolutions 128,96,64,56,48,32 \
+  --long-edges 128,96,64,56,48,32 \
   --output-dir outputs/student_lowres \
   /path/to/image.png
 ```
