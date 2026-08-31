@@ -19,9 +19,11 @@
 //! Final nearest-neighbor resize is always used; bilinear/bicubic are
 //! forbidden for the pixel-grid stage.
 
+pub mod cleanup;
 mod error;
 pub mod preprocess;
 
+pub use cleanup::{SimpleCleanupOptions, SimpleCleanupReport};
 pub use error::PixelizationError;
 
 use std::{path::Path, sync::Mutex, time::{Duration, Instant}};
@@ -254,6 +256,59 @@ impl Pixelizer {
     ) -> Result<(DynamicImage, PixelizeTimings)> {
         let square = resize_rgba_bicubic(&image.to_rgba8(), resolution, resolution)?;
         self.process_lowres_long_edge_timed(&DynamicImage::ImageRgba8(square), resolution)
+    }
+
+    /// High-quality true-bitmap pipeline:
+    ///
+    /// 1. Resize source to `long_edge * teacher_scale` while preserving aspect.
+    /// 2. Run the WuZongWei6 teacher ONNX at that high-resolution lattice.
+    /// 3. Collapse known 4px teacher cells using a Rust simple cleanup pass.
+    /// 4. Return the true-resolution bitmap (no upscale).
+    pub fn process_high_quality_bitmap_timed(
+        &self,
+        image: &DynamicImage,
+        long_edge: u32,
+        teacher_scale: u32,
+        cleanup_options: cleanup::SimpleCleanupOptions,
+    ) -> Result<(DynamicImage, PixelizeTimings, cleanup::SimpleCleanupReport)> {
+        if long_edge == 0 || teacher_scale == 0 {
+            return Err(PixelizationError::EmptyGrid.into());
+        }
+        let teacher_long_edge = long_edge
+            .checked_mul(teacher_scale)
+            .ok_or(PixelizationError::EmptyGrid)?;
+        if teacher_long_edge % BEST_CELL_SIZE != 0 {
+            return Err(PixelizationError::EmptyGrid.into());
+        }
+
+        let total_start = Instant::now();
+        let preprocess_start = Instant::now();
+        let source = image.to_rgba8();
+        let (target_w, target_h) = lowres_aspect_dims(source.width(), source.height(), teacher_long_edge)?;
+        let model_input = resize_rgba_bicubic(&source, target_w, target_h)?;
+        let nchw = rgba_to_normalized_nchw(&model_input);
+        let preprocess = preprocess_start.elapsed();
+
+        let inference_start = Instant::now();
+        let output_tensor = self.infer(nchw)?;
+        let inference = inference_start.elapsed();
+
+        let postprocess_start = Instant::now();
+        let pseudo = tensor_to_rgb(output_tensor)?;
+        let (cleaned, report) = cleanup::clean_known_pitch(&pseudo, cleanup_options);
+        let postprocess = postprocess_start.elapsed();
+        let total = total_start.elapsed();
+
+        Ok((
+            DynamicImage::ImageRgb8(cleaned),
+            PixelizeTimings {
+                preprocess,
+                inference,
+                postprocess,
+                total,
+            },
+            report,
+        ))
     }
 
     fn infer(&self, input: Array4<f32>) -> Result<ndarray::ArrayD<f32>> {

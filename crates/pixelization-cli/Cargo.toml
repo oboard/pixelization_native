@@ -14,6 +14,10 @@ path = "src/main.rs"
 name = "lowres-bench"
 path = "src/bin/lowres_bench.rs"
 
+[[bin]]
+name = "hq-pixelize"
+path = "src/bin/hq_pixelize.rs"
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
