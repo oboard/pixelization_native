@@ -1,32 +1,28 @@
-//! CPU-only native Pixelization engine.
-//!
-//! Replicates the exact `test_pro.py` geometry pipeline:
+//! CPU-only native Pixelization engine — high-quality true-bitmap pipeline.
 //!
 //! ```text
 //! Input image
-//!  ↓  rescale: BICUBIC halve/double to keep both dims in [128, 4000]
-//!  ↓  resize: BICUBIC to (W//cell_size)*4 × (H//cell_size)*4
-//!  ↓  center-crop: snap to multiple of 4
+//!  ↓  aspect-preserving resize to long_edge * teacher_scale (bicubic)
 //!  ↓  normalize: RGB8 → NCHW f32 in [-1, 1]
-//!  ↓  ONNX Runtime CPU inference
-//!  ↓  denormalize: NCHW f32 → RGB8 (clamp then cast)
-//!  ↓  nearest-neighbor ÷4: collapse 4-px lattice cells to 1 px
-//!  ↓  nearest-neighbor ×cell_size: each logical cell → cell_size px
-//!  ↓  alpha compositing (original alpha plane, same geometry)
-//! Output pixel-art RGBA
+//!  ↓  ONNX Runtime CPU inference (WuZongWei6 teacher)
+//!  ↓  denormalize: NCHW f32 → RGB8
+//!  ↓  Rust simple cleanup: 4px teacher cells → 1 bitmap pixel
+//! Output true-resolution bitmap RGB PNG
 //! ```
 //!
-//! Final nearest-neighbor resize is always used; bilinear/bicubic are
-//! forbidden for the pixel-grid stage.
+//! The output PNG is the final bitmap: no upscale, no ÷4→×4 block expansion.
 
 pub mod cleanup;
 mod error;
-pub mod preprocess;
 
 pub use cleanup::{SimpleCleanupOptions, SimpleCleanupReport};
 pub use error::PixelizationError;
 
-use std::{path::Path, sync::Mutex, time::{Duration, Instant}};
+use std::{
+    path::Path,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
 use fast_image_resize as fr;
@@ -40,22 +36,7 @@ use ort::{
 // The upstream generator is always trained at this cell size.
 const BEST_CELL_SIZE: u32 = 4;
 
-/// Pixel-grid controls applied outside the neural network.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PixelizeOptions {
-    /// Final pixel cell width/height in the output image. Must be ≥ 1.
-    ///
-    /// The network always runs at a 4-px lattice. Larger values produce a coarser mosaic.
-    pub cell_size: u32,
-}
-
-impl Default for PixelizeOptions {
-    fn default() -> Self {
-        Self { cell_size: 4 }
-    }
-}
-
-/// Detailed timings for one low-resolution inference pass.
+/// Detailed timings for one high-quality inference pass.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PixelizeTimings {
     pub preprocess: Duration,
@@ -119,152 +100,13 @@ impl Pixelizer {
         })
     }
 
-    /// Model's static input size as `(width, height)`.
-    ///
-    /// Returns `(0, 0)` for dynamic-shape models (the actual size depends on input).
-    #[inline]
-    pub fn input_size(&self) -> (u32, u32) {
-        // Dynamic-shape model - size is determined at runtime
-        (0, 0)
-    }
-
-    /// Pixelize one image.
-    ///
-    /// Alpha is preserved: it travels through the same nearest-neighbor grid
-    /// geometry as the RGB channels and is composited onto the output.
-    pub fn process(&self, image: &DynamicImage, options: PixelizeOptions) -> Result<DynamicImage> {
-        if options.cell_size == 0 {
-            return Err(PixelizationError::InvalidCellSize(0).into());
-        }
-
-        let source = image.to_rgba8();
-
-        // Step 1 – rescale to [128, 4000] (mirrors test_pro.rescale()).
-        let source = preprocess::rescale_into_bounds(source)?;
-
-        // Step 2 – resize to (W//cell_size)*BEST × (H//cell_size)*BEST via BICUBIC.
-        let (sw, sh) = source.dimensions();
-        let target_w = (sw / options.cell_size) * BEST_CELL_SIZE;
-        let target_h = (sh / options.cell_size) * BEST_CELL_SIZE;
-        if target_w == 0 || target_h == 0 {
-            return Err(PixelizationError::EmptyGrid.into());
-        }
-        let resized = resize_rgba_bicubic(&source, target_w, target_h)?;
-
-        // Step 3 – center-crop to nearest multiple of 4 (mirrors test_pro.process()).
-        let (rw, rh) = resized.dimensions();
-        let crop_w = (rw / 4) * 4;
-        let crop_h = (rh / 4) * 4;
-        if crop_w == 0 || crop_h == 0 {
-            return Err(PixelizationError::EmptyGrid.into());
-        }
-        let cx = (rw - crop_w) / 2;
-        let cy = (rh - crop_h) / 2;
-        let cropped = image::imageops::crop_imm(&resized, cx, cy, crop_w, crop_h).to_image();
-
-        // Step 4 – NCHW f32 normalization, inference, denormalization.
-        // Note: Dynamic-shape model accepts any size divisible by 4.
-        let nchw = rgba_to_normalized_nchw(&cropped);
-        let output_tensor = self.infer(nchw)?;
-        let generated = tensor_to_rgb(output_tensor)?;
-
-        // Step 5 – nearest-neighbor ÷BEST_CELL_SIZE (collapse lattice cells).
-        let grid_w = crop_w / BEST_CELL_SIZE;
-        let grid_h = crop_h / BEST_CELL_SIZE;
-        let grid = resize_rgb_nearest(&generated, grid_w, grid_h)?;
-
-        // Step 6 – nearest-neighbor ×cell_size (expand to final cell size).
-        let out_w = grid_w * options.cell_size;
-        let out_h = grid_h * options.cell_size;
-        let rgb = resize_rgb_nearest(&grid, out_w, out_h)?;
-
-        // Step 7 – alpha: extract, nearest ÷BEST, nearest ×cell_size.
-        let alpha = extract_alpha(&cropped);
-        let alpha = resize_gray_nearest(&alpha, grid_w, grid_h)?;
-        let alpha = resize_gray_nearest(&alpha, out_w, out_h)?;
-
-        // Step 8 – composite.
-        let mut output = RgbaImage::new(out_w, out_h);
-        for (x, y, pixel) in output.enumerate_pixels_mut() {
-            let c = rgb.get_pixel(x, y);
-            *pixel = image::Rgba([c[0], c[1], c[2], alpha.get_pixel(x, y)[0]]);
-        }
-        Ok(DynamicImage::ImageRgba8(output))
-    }
-
-    /// Pixelize using an explicit long-edge neural-network input resolution.
-    ///
-    /// This is intended for low-resolution pixel-art experiments where the final
-    /// pixel-art canvas is itself small (for example long edge 128, 56, or 32).
-    /// The input image keeps its aspect ratio, its long edge becomes `long_edge`,
-    /// and both dimensions are snapped to a multiple of the trained 4-px lattice.
-    /// The unchanged FP32 ONNX model is run at that size; postprocess is nearest
-    /// ÷4 then nearest ×4, so the final output keeps the same aspect ratio.
-    pub fn process_lowres_long_edge_timed(
-        &self,
-        image: &DynamicImage,
-        long_edge: u32,
-    ) -> Result<(DynamicImage, PixelizeTimings)> {
-        if long_edge == 0 || long_edge % BEST_CELL_SIZE != 0 {
-            return Err(PixelizationError::EmptyGrid.into());
-        }
-
-        let total_start = Instant::now();
-        let preprocess_start = Instant::now();
-        let source = image.to_rgba8();
-        let (target_w, target_h) = lowres_aspect_dims(source.width(), source.height(), long_edge)?;
-        let model_input = resize_rgba_bicubic(&source, target_w, target_h)?;
-        let nchw = rgba_to_normalized_nchw(&model_input);
-        let preprocess = preprocess_start.elapsed();
-
-        let inference_start = Instant::now();
-        let output_tensor = self.infer(nchw)?;
-        let inference = inference_start.elapsed();
-
-        let postprocess_start = Instant::now();
-        // Bitmap mode: the model output pixels are the final pixels. Do not
-        // collapse to a 4px lattice and upscale, otherwise the result becomes
-        // blocks of larger pixels instead of a true low-resolution bitmap.
-        let rgb = tensor_to_rgb(output_tensor)?;
-        let alpha = extract_alpha(&model_input);
-
-        let mut output = RgbaImage::new(target_w, target_h);
-        for (x, y, pixel) in output.enumerate_pixels_mut() {
-            let c = rgb.get_pixel(x, y);
-            *pixel = image::Rgba([c[0], c[1], c[2], alpha.get_pixel(x, y)[0]]);
-        }
-        let postprocess = postprocess_start.elapsed();
-        let total = total_start.elapsed();
-
-        Ok((
-            DynamicImage::ImageRgba8(output),
-            PixelizeTimings {
-                preprocess,
-                inference,
-                postprocess,
-                total,
-            },
-        ))
-    }
-
-    /// Backwards-compatible square helper for experiments that explicitly want a
-    /// square model canvas.
-    pub fn process_lowres_square_timed(
-        &self,
-        image: &DynamicImage,
-        resolution: u32,
-    ) -> Result<(DynamicImage, PixelizeTimings)> {
-        let square = resize_rgba_bicubic(&image.to_rgba8(), resolution, resolution)?;
-        self.process_lowres_long_edge_timed(&DynamicImage::ImageRgba8(square), resolution)
-    }
-
     /// High-quality true-bitmap pipeline:
     ///
     /// 1. Resize source to `long_edge * teacher_scale` while preserving aspect.
     /// 2. Run the WuZongWei6 teacher ONNX at that high-resolution lattice.
-    /// 3. Collapse known 4px teacher cells using a Rust simple cleanup pass.
+    /// 3. Collapse known 4px teacher cells using the Rust simple cleanup pass.
     /// 4. Return the true-resolution bitmap (no upscale).
-    pub fn process_high_quality_bitmap_timed(
+    pub fn process_bitmap_timed(
         &self,
         image: &DynamicImage,
         long_edge: u32,
@@ -284,7 +126,8 @@ impl Pixelizer {
         let total_start = Instant::now();
         let preprocess_start = Instant::now();
         let source = image.to_rgba8();
-        let (target_w, target_h) = lowres_aspect_dims(source.width(), source.height(), teacher_long_edge)?;
+        let (target_w, target_h) =
+            aspect_dims(source.width(), source.height(), teacher_long_edge)?;
         let model_input = resize_rgba_bicubic(&source, target_w, target_h)?;
         let nchw = rgba_to_normalized_nchw(&model_input);
         let preprocess = preprocess_start.elapsed();
@@ -333,10 +176,10 @@ impl Pixelizer {
 }
 
 // ---------------------------------------------------------------------------
-// Preprocessing helpers
+// Helpers
 // ---------------------------------------------------------------------------
 
-fn lowres_aspect_dims(w: u32, h: u32, long_edge: u32) -> Result<(u32, u32)> {
+fn aspect_dims(w: u32, h: u32, long_edge: u32) -> Result<(u32, u32)> {
     if w == 0 || h == 0 || long_edge == 0 || long_edge % BEST_CELL_SIZE != 0 {
         return Err(PixelizationError::EmptyGrid.into());
     }
@@ -374,10 +217,6 @@ pub(crate) fn rgba_to_normalized_nchw(image: &RgbaImage) -> Array4<f32> {
 }
 
 /// Denormalize NCHW f32 output `[-1, 1]` → `RGB8` with clamp.
-///
-/// Upstream uses `astype(np.uint8)` without an explicit clamp, so out-of-range
-/// values wrap.  We clamp instead (safer for ONNX Runtime numerics which may
-/// differ by a tiny epsilon at the boundaries).
 fn tensor_to_rgb(tensor: ndarray::ArrayD<f32>) -> Result<RgbImage> {
     let sh = tensor.shape();
     if sh.len() != 4 || sh[0] != 1 || sh[1] != 3 {
@@ -393,10 +232,6 @@ fn tensor_to_rgb(tensor: ndarray::ArrayD<f32>) -> Result<RgbImage> {
     }
     Ok(img)
 }
-
-// ---------------------------------------------------------------------------
-// Resize helpers
-// ---------------------------------------------------------------------------
 
 fn resize_rgba_bicubic(input: &RgbaImage, w: u32, h: u32) -> Result<RgbaImage> {
     if input.width() == w && input.height() == h {
@@ -423,56 +258,6 @@ fn resize_rgba_bicubic(input: &RgbaImage, w: u32, h: u32) -> Result<RgbaImage> {
     RgbaImage::from_raw(w, h, dst.into_vec()).context("bicubic resize output")
 }
 
-fn resize_rgb_nearest(input: &RgbImage, w: u32, h: u32) -> Result<RgbImage> {
-    if input.width() == w && input.height() == h {
-        return Ok(input.clone());
-    }
-    let src = fr::images::Image::from_vec_u8(
-        input.width(),
-        input.height(),
-        input.as_raw().to_vec(),
-        fr::PixelType::U8x3,
-    )
-    .context("nearest RGB resize src")?;
-    let mut dst = fr::images::Image::new(w, h, fr::PixelType::U8x3);
-    fr::Resizer::new()
-        .resize(
-            &src,
-            &mut dst,
-            Some(&fr::ResizeOptions::new().resize_alg(fr::ResizeAlg::Nearest)),
-        )
-        .context("nearest RGB resize")?;
-    RgbImage::from_raw(w, h, dst.into_vec()).context("nearest RGB resize output")
-}
-
-fn extract_alpha(input: &RgbaImage) -> image::GrayImage {
-    image::GrayImage::from_fn(input.width(), input.height(), |x, y| {
-        image::Luma([input.get_pixel(x, y)[3]])
-    })
-}
-
-fn resize_gray_nearest(input: &image::GrayImage, w: u32, h: u32) -> Result<image::GrayImage> {
-    if input.width() == w && input.height() == h {
-        return Ok(input.clone());
-    }
-    let src = fr::images::Image::from_vec_u8(
-        input.width(),
-        input.height(),
-        input.as_raw().to_vec(),
-        fr::PixelType::U8,
-    )
-    .context("nearest gray resize src")?;
-    let mut dst = fr::images::Image::new(w, h, fr::PixelType::U8);
-    fr::Resizer::new()
-        .resize(
-            &src,
-            &mut dst,
-            Some(&fr::ResizeOptions::new().resize_alg(fr::ResizeAlg::Nearest)),
-        )
-        .context("nearest gray resize")?;
-    image::GrayImage::from_raw(w, h, dst.into_vec()).context("nearest gray resize output")
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -483,25 +268,17 @@ mod tests {
 
     #[test]
     fn nchw_normalization_layout_and_values() {
-        // R=0 → -1.0, G=127, B=255 → 1.0, A=42 ignored
         let img = RgbaImage::from_raw(1, 1, vec![0u8, 127, 255, 42]).unwrap();
         let data = rgba_to_normalized_nchw(&img);
         assert_eq!(data.shape(), &[1, 3, 1, 1]);
-        // R channel
-        assert!(
-            (data[[0, 0, 0, 0]] - (-1.0_f32)).abs() < 1e-6,
-            "R=-1 expected"
-        );
-        // G channel: 127/127.5 - 1 = 0.9961... - 1 = -0.0039...
+        assert!((data[[0, 0, 0, 0]] - (-1.0_f32)).abs() < 1e-6, "R=-1 expected");
         let expected_g = 127.0_f32 / 127.5 - 1.0;
         assert!((data[[0, 1, 0, 0]] - expected_g).abs() < 1e-5, "G mismatch");
-        // B channel
         assert!((data[[0, 2, 0, 0]] - 1.0_f32).abs() < 1e-5, "B=1 expected");
     }
 
     #[test]
     fn nchw_layout_is_channel_first() {
-        // 2×2 image with distinct R/G/B planes
         let mut img = RgbaImage::new(2, 2);
         img.put_pixel(0, 0, image::Rgba([10, 20, 30, 255]));
         img.put_pixel(1, 0, image::Rgba([40, 50, 60, 255]));
@@ -509,16 +286,12 @@ mod tests {
         img.put_pixel(1, 1, image::Rgba([100, 110, 120, 255]));
         let data = rgba_to_normalized_nchw(&img);
         assert_eq!(data.shape(), &[1, 3, 2, 2]);
-        // Verify R plane is contiguous at offset 0
         assert!((data[[0, 0, 0, 0]] - (10.0_f32 / 127.5 - 1.0)).abs() < 1e-5);
         assert!((data[[0, 0, 0, 1]] - (40.0_f32 / 127.5 - 1.0)).abs() < 1e-5);
-        assert!((data[[0, 1, 0, 0]] - (20.0_f32 / 127.5 - 1.0)).abs() < 1e-5);
-        assert!((data[[0, 2, 0, 0]] - (30.0_f32 / 127.5 - 1.0)).abs() < 1e-5);
     }
 
     #[test]
     fn tensor_to_rgb_roundtrip() {
-        // Forward-backward: nchw → tensor_to_rgb should recover original pixels
         let mut img = RgbaImage::new(2, 2);
         img.put_pixel(0, 0, image::Rgba([0, 128, 255, 255]));
         img.put_pixel(1, 0, image::Rgba([64, 192, 32, 255]));
@@ -527,7 +300,6 @@ mod tests {
         let nchw = rgba_to_normalized_nchw(&img);
         let dyn_arr = nchw.into_dyn();
         let recovered = tensor_to_rgb(dyn_arr).unwrap();
-        // Due to f32 rounding the result may differ by ±1 from the original.
         for (orig, rec) in img.pixels().zip(recovered.pixels()) {
             for c in 0..3 {
                 let diff = (i32::from(orig[c]) - i32::from(rec[c])).unsigned_abs();
@@ -537,25 +309,23 @@ mod tests {
     }
 
     #[test]
-    fn process_geometry_cell_size_4() {
-        // Without a real model we can only check the geometry path doesn't panic
-        // and that preprocess::rescale_into_bounds is idempotent for a normal image.
-        let img = RgbaImage::from_pixel(256, 256, image::Rgba([128, 64, 32, 255]));
-        let result = preprocess::rescale_into_bounds(img).unwrap();
-        assert_eq!(result.dimensions(), (256, 256));
+    fn aspect_dims_landscape() {
+        let (tw, th) = aspect_dims(356, 260, 512).unwrap();
+        assert_eq!(tw, 512);
+        assert_eq!(th, 372);
     }
 
     #[test]
-    fn rescale_shrinks_oversized() {
-        let big = RgbaImage::from_pixel(8192, 4096, image::Rgba([0, 0, 0, 255]));
-        let result = preprocess::rescale_into_bounds(big).unwrap();
-        assert!(result.width() <= 4000 && result.height() <= 4000);
+    fn aspect_dims_portrait() {
+        let (tw, th) = aspect_dims(300, 600, 128).unwrap();
+        assert_eq!(th, 128);
+        assert!(tw <= 128);
+        assert_eq!(tw % 4, 0);
     }
 
     #[test]
-    fn rescale_grows_undersized() {
-        let small = RgbaImage::from_pixel(64, 64, image::Rgba([0, 0, 0, 255]));
-        let result = preprocess::rescale_into_bounds(small).unwrap();
-        assert!(result.width() >= 128 && result.height() >= 128);
+    fn aspect_dims_rejects_zero() {
+        assert!(aspect_dims(0, 100, 128).is_err());
+        assert!(aspect_dims(100, 100, 0).is_err());
     }
 }

@@ -10,15 +10,22 @@ pub struct SimpleCleanupOptions {
     pub max_colors: Option<usize>,
     /// Detail-preserving-ish neighborhood smoothing passes.
     pub smooth_passes: usize,
+    /// Align nominal teacher lattice boundaries to local Sobel edge-energy peaks.
+    /// This is the useful grid-refinement stage adapted from perfectPixel.
+    pub refine_grid: bool,
+    /// Search radius around each nominal grid boundary, in teacher pixels.
+    pub refine_radius: u32,
 }
 
 impl Default for SimpleCleanupOptions {
     fn default() -> Self {
         Self {
             pitch: 4,
-            merge_threshold: 18.0,
-            max_colors: None,
+            merge_threshold: 60.0,
+            max_colors: Some(20),
             smooth_passes: 2,
+            refine_grid: false,
+            refine_radius: 1,
         }
     }
 }
@@ -50,17 +57,20 @@ fn median_u8(vals: &mut [u8]) -> u8 {
     vals[vals.len() / 2]
 }
 
-fn sample_cell_median(img: &RgbImage, x0: u32, y0: u32, pitch: u32) -> [u8; 3] {
-    // Sample the centered half of the cell, similar in spirit to ai2pixelart's
-    // robust center-window median. For pitch=4 this is a 2x2 core.
-    let keep = (pitch / 2).max(1);
-    let ox = (pitch - keep) / 2;
-    let oy = (pitch - keep) / 2;
-    let mut r = Vec::with_capacity((keep * keep) as usize);
-    let mut g = Vec::with_capacity((keep * keep) as usize);
-    let mut b = Vec::with_capacity((keep * keep) as usize);
-    for yy in y0 + oy..y0 + oy + keep {
-        for xx in x0 + ox..x0 + ox + keep {
+fn sample_cell_median(img: &RgbImage, x0: u32, y0: u32, x1: u32, y1: u32) -> [u8; 3] {
+    // Center-window median avoids teacher's anti-aliased/interpolated grid edge.
+    // The boundaries may be Sobel-refined, so derive the sample window per cell.
+    let width = (x1 - x0).max(1);
+    let height = (y1 - y0).max(1);
+    let keep_w = (width / 2).max(1);
+    let keep_h = (height / 2).max(1);
+    let sx = x0 + (width - keep_w) / 2;
+    let sy = y0 + (height - keep_h) / 2;
+    let mut r = Vec::with_capacity((keep_w * keep_h) as usize);
+    let mut g = Vec::with_capacity((keep_w * keep_h) as usize);
+    let mut b = Vec::with_capacity((keep_w * keep_h) as usize);
+    for yy in sy..sy + keep_h {
+        for xx in sx..sx + keep_w {
             let p = img.get_pixel(xx.min(img.width() - 1), yy.min(img.height() - 1));
             r.push(p[0]);
             g.push(p[1]);
@@ -68,6 +78,65 @@ fn sample_cell_median(img: &RgbImage, x0: u32, y0: u32, pitch: u32) -> [u8; 3] {
         }
     }
     [median_u8(&mut r), median_u8(&mut g), median_u8(&mut b)]
+}
+
+/// Return vertical and horizontal Sobel energy projections. This is a direct,
+/// allocation-light Rust adaptation of perfectPixel's `refine_grids` stage.
+fn sobel_edge_projections(img: &RgbImage) -> (Vec<u64>, Vec<u64>) {
+    let w = img.width() as usize;
+    let h = img.height() as usize;
+    let mut gray = vec![0i32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let p = img.get_pixel(x as u32, y as u32);
+            gray[y * w + x] = (299 * i32::from(p[0]) + 587 * i32::from(p[1]) + 114 * i32::from(p[2])) / 1000;
+        }
+    }
+    let mut vertical = vec![0u64; w];
+    let mut horizontal = vec![0u64; h];
+    if w < 3 || h < 3 {
+        return (vertical, horizontal);
+    }
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let tl = gray[(y - 1) * w + x - 1];
+            let tc = gray[(y - 1) * w + x];
+            let tr = gray[(y - 1) * w + x + 1];
+            let ml = gray[y * w + x - 1];
+            let mr = gray[y * w + x + 1];
+            let bl = gray[(y + 1) * w + x - 1];
+            let bc = gray[(y + 1) * w + x];
+            let br = gray[(y + 1) * w + x + 1];
+            let gx = -tl + tr - 2 * ml + 2 * mr - bl + br;
+            let gy = -tl - 2 * tc - tr + bl + 2 * bc + br;
+            vertical[x] += gx.unsigned_abs() as u64;
+            horizontal[y] += gy.unsigned_abs() as u64;
+        }
+    }
+    (vertical, horizontal)
+}
+
+fn refine_axis(length: u32, pitch: u32, radius: u32, energy: &[u64]) -> Vec<u32> {
+    let cells = length / pitch;
+    let mut coords = Vec::with_capacity(cells as usize + 1);
+    coords.push(0);
+    for cell in 1..cells {
+        let nominal = cell * pitch;
+        let lo = nominal.saturating_sub(radius).max(coords.last().copied().unwrap_or(0) + 1);
+        let hi = (nominal + radius).min(length.saturating_sub(1));
+        let mut best = nominal;
+        let mut best_energy = 0;
+        for x in lo..=hi {
+            let score = energy[x as usize];
+            if score > best_energy {
+                best_energy = score;
+                best = x;
+            }
+        }
+        coords.push(best);
+    }
+    coords.push(length);
+    coords
 }
 
 fn extract_palette(cells: &[[u8; 3]], opts: SimpleCleanupOptions) -> Vec<[u8; 3]> {
@@ -167,10 +236,28 @@ pub fn clean_known_pitch(img: &RgbImage, opts: SimpleCleanupOptions) -> (RgbImag
     let pitch = opts.pitch.max(1);
     let cells_w = img.width() / pitch;
     let cells_h = img.height() / pitch;
+    let (x_coords, y_coords) = if opts.refine_grid {
+        let (vertical_energy, horizontal_energy) = sobel_edge_projections(img);
+        (
+            refine_axis(cells_w * pitch, pitch, opts.refine_radius, &vertical_energy),
+            refine_axis(cells_h * pitch, pitch, opts.refine_radius, &horizontal_energy),
+        )
+    } else {
+        (
+            (0..=cells_w).map(|i| i * pitch).collect(),
+            (0..=cells_h).map(|i| i * pitch).collect(),
+        )
+    };
     let mut cells = Vec::with_capacity((cells_w * cells_h) as usize);
     for cy in 0..cells_h {
         for cx in 0..cells_w {
-            cells.push(sample_cell_median(img, cx * pitch, cy * pitch, pitch));
+            cells.push(sample_cell_median(
+                img,
+                x_coords[cx as usize],
+                y_coords[cy as usize],
+                x_coords[cx as usize + 1],
+                y_coords[cy as usize + 1],
+            ));
         }
     }
 

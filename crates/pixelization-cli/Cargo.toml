@@ -10,18 +10,9 @@ publish = false
 name = "pixelize"
 path = "src/main.rs"
 
-[[bin]]
-name = "lowres-bench"
-path = "src/bin/lowres_bench.rs"
-
-[[bin]]
-name = "hq-pixelize"
-path = "src/bin/hq_pixelize.rs"
-
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 image.workspace = true
 walkdir.workspace = true
-libc.workspace = true
 pixelization = { path = "../pixelization" }

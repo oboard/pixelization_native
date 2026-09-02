@@ -1,46 +1,89 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
-use pixelization::{PixelizeOptions, Pixelizer};
+use pixelization::{Pixelizer, SimpleCleanupOptions};
 use walkdir::WalkDir;
 
-/// CPU-only Pixel Art engine  —  ONNX Runtime / CPU backend.
+/// CPU-only high-quality Pixel Art engine — ONNX Runtime / CPU backend.
+///
+/// Pipeline: source → Wu teacher at long_edge*teacher_scale → Rust simple
+/// cleanup → true-bitmap PNG. No upscale; one output pixel is one logical pixel.
 ///
 /// Examples:
-///   pixelize input.png output.png --cell-size 4
-///   pixelize input.png output.png --model models/pixelization.onnx --threads 8
-///   pixelize ./input ./output --cell-size 4
+///   pixelize input.png output.png --long-edges 128
+///   pixelize input.png out_dir --long-edges 128,56,32
+///   pixelize ./input ./output --long-edges 128,56,32
 #[derive(Debug, Parser)]
 #[command(name = "pixelize", version)]
 struct Args {
     /// Input PNG/JPEG/WebP file, or a directory for batch processing.
     input: PathBuf,
-    /// Output file (single input) or directory (directory input).
+    /// Output file (single input with one long edge) or output directory.
     output: PathBuf,
-    /// Path to the exported static-shape ONNX model.
+    /// Path to the exported dynamic-shape ONNX teacher model.
     #[arg(long, default_value = "models/pixelization.onnx")]
     model: PathBuf,
-    /// Pixel cell size (nearest-neighbor upscale factor for the output grid).
-    /// The network always infers at the trained 4-px lattice.
-    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u32).range(1..))]
-    cell_size: u32,
-    /// ONNX Runtime intra-op thread count. 0 = runtime default (all cores).
-    #[arg(long, default_value_t = 0)]
+    /// Target final bitmap long edge(s), e.g. 128,56,32.
+    #[arg(long, value_delimiter = ',', default_value = "128")]
+    long_edges: Vec<u32>,
+    /// Teacher high-resolution multiplier. 4 matches Wu teacher's trained lattice.
+    #[arg(long, default_value_t = 4)]
+    teacher_scale: u32,
+    /// ONNX Runtime intra-op thread count. 0 = runtime default; 4 is a good CPU baseline.
+    #[arg(long, default_value_t = 4)]
     threads: usize,
+    /// Palette merge threshold for Rust simple cleanup. Higher merges more shades.
+    #[arg(long, default_value_t = 60.0)]
+    merge_threshold: f32,
+    /// Max palette colors for Rust simple cleanup. Use 0 to disable the cap.
+    #[arg(long, default_value_t = 20)]
+    max_colors: usize,
+    /// Neighborhood smoothing passes for Rust simple cleanup.
+    #[arg(long, default_value_t = 2)]
+    smooth_passes: usize,
+    /// Refine nominal 4px grid boundaries using Sobel edge energy (perfectPixel mode).
+    /// Best for externally generated, distorted pixel-style images; off by default for Wu teacher.
+    #[arg(long)]
+    grid_refine: bool,
+    /// Pixel radius searched around each grid boundary when --grid-refine is active.
+    #[arg(long, default_value_t = 1)]
+    grid_refine_radius: u32,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    if args.long_edges.is_empty() {
+        bail!("--long-edges must not be empty");
+    }
     let pixelizer = Pixelizer::load_with_threads(&args.model, args.threads)
         .with_context(|| format!("load model '{}'", args.model.display()))?;
 
+    let cleanup = SimpleCleanupOptions {
+        pitch: 4,
+        merge_threshold: args.merge_threshold,
+        max_colors: if args.max_colors == 0 { None } else { Some(args.max_colors) },
+        smooth_passes: args.smooth_passes,
+        refine_grid: args.grid_refine,
+        refine_radius: args.grid_refine_radius,
+    };
+
     if args.input.is_file() {
-        process_one(&pixelizer, &args.input, &args.output, args.cell_size)?;
-    } else if args.input.is_dir() {
-        if args.output.exists() && !args.output.is_dir() {
-            bail!("--output must be a directory when --input is a directory");
+        if args.long_edges.len() == 1 && !args.output.is_dir() {
+            process_one(&pixelizer, &args.input, &args.output, args.long_edges[0], args.teacher_scale, cleanup)?;
+        } else {
+            std::fs::create_dir_all(&args.output)
+                .with_context(|| format!("create output dir '{}'", args.output.display()))?;
+            let stem = args.input.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+            for &edge in &args.long_edges {
+                let out = args.output.join(edge.to_string()).join(format!("{stem}_{edge}.png"));
+                if let Some(parent) = out.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                process_one(&pixelizer, &args.input, &out, edge, args.teacher_scale, cleanup)?;
+            }
         }
+    } else if args.input.is_dir() {
         std::fs::create_dir_all(&args.output)
             .with_context(|| format!("create output dir '{}'", args.output.display()))?;
         for entry in WalkDir::new(&args.input)
@@ -49,15 +92,14 @@ fn main() -> Result<()> {
             .filter(|e| e.file_type().is_file())
             .filter(|e| is_supported(e.path()))
         {
-            let rel = entry
-                .path()
-                .strip_prefix(&args.input)
-                .context("strip input prefix")?;
-            let out = args.output.join(rel);
-            if let Some(parent) = out.parent() {
-                std::fs::create_dir_all(parent)?;
+            let stem = entry.path().file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+            for &edge in &args.long_edges {
+                let out = args.output.join(edge.to_string()).join(format!("{stem}_{edge}.png"));
+                if let Some(parent) = out.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                process_one(&pixelizer, entry.path(), &out, edge, args.teacher_scale, cleanup)?;
             }
-            process_one(&pixelizer, entry.path(), &out, args.cell_size)?;
         }
     } else {
         bail!("input does not exist: {}", args.input.display());
@@ -65,26 +107,36 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn process_one(px: &Pixelizer, input: &Path, output: &Path, cell_size: u32) -> Result<()> {
+fn process_one(
+    px: &Pixelizer,
+    input: &Path,
+    output: &Path,
+    long_edge: u32,
+    teacher_scale: u32,
+    cleanup: SimpleCleanupOptions,
+) -> Result<()> {
     let img = image::open(input).with_context(|| format!("open '{}'", input.display()))?;
-    let result = px
-        .process(&img, PixelizeOptions { cell_size })
+    let (result, timings, report) = px
+        .process_bitmap_timed(&img, long_edge, teacher_scale, cleanup)
         .with_context(|| format!("pixelize '{}'", input.display()))?;
-    result
-        .save(output)
-        .with_context(|| format!("save '{}'", output.display()))?;
-    eprintln!("{} → {}", input.display(), output.display());
+    result.save(output).with_context(|| format!("save '{}'", output.display()))?;
+    eprintln!(
+        "{} → {} [{}x{}, palette={}, infer={:.2}ms clean={:.2}ms total={:.2}ms]",
+        input.display(),
+        output.display(),
+        report.cells_w,
+        report.cells_h,
+        report.palette_size,
+        timings.inference.as_secs_f64() * 1000.0,
+        timings.postprocess.as_secs_f64() * 1000.0,
+        timings.total.as_secs_f64() * 1000.0,
+    );
     Ok(())
 }
 
 fn is_supported(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| {
-            matches!(
-                e.to_ascii_lowercase().as_str(),
-                "png" | "jpg" | "jpeg" | "webp"
-            )
-        })
+        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp"))
         .unwrap_or(false)
 }
