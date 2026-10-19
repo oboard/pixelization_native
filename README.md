@@ -1,106 +1,83 @@
 # Pixelization Native
 
-High-performance, pure CPU, Rust native Pixel Art engine. Port of [WuZongWei6/Pixelization](https://github.com/WuZongWei6/Pixelization) with a Rust-native true-bitmap cleanup stage.
+使用 Rust 和 ONNX Runtime 在 CPU 上复刻 [WuZongWei6/Pixelization](https://github.com/WuZongWei6/Pixelization) 的 Test Pro 推理效果。
 
-## Features
+## 目标
 
-- **True bitmap output** — one PNG pixel is one logical pixel; no upscale, no ÷4→×4 blocks
-- **Aspect-ratio preserving** — targets are long-edge values (e.g. 128/56/32)
-- **Pure CPU inference** via ONNX Runtime (FP32)
-- **Rust cleanup pipeline** — palette merge + smoothing + optional perfectPixel grid refinement, no Python/NumPy/OpenCV at runtime
-- **Cross-platform** - macOS (ARM64/x86_64), Linux (ARM64/x86_64), Windows (x86_64)
-- **Dynamic input size** - any image size divisible by 4
+- 保留上游生成器、固定风格码和 AliasNet 的完整推理链路
+- 保持上游 `cell_size`、尺寸预处理和最近邻像素网格语义
+- 运行时仅依赖 Rust 程序与 ONNX Runtime，支持 macOS、Linux 和 Windows
+- 参考 `normalize_pixels.py`，无损收缩到最小最近邻逻辑网格
+- 不添加调色板压缩、平滑或低分辨率学生模型
 
-## Quick Start
+## 准备模型
 
-### 1. Download Weights
-
-```bash
-# From Google Drive (see upstream repo for links)
-# Place files at:
-#   checkpoints/160_net_G_A.pth (144 MB)
-#   alias_net.pth (34 MB)
-```
-
-### 2. Set Up Python Tooling with uv
-
-Only needed to export the ONNX model; not needed at runtime.
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv sync
-```
-
-### 3. Export ONNX Model
-
-```bash
-uv run python export/export_onnx.py \
-    --generator checkpoints/160_net_G_A.pth \
-    --alias alias_net.pth \
-    --output models/pixelization.onnx
-```
-
-### 4. Run
-
-```bash
-# Build
-cargo build --release
-
-# Single image, long edge 128 (default)
-target/release/pixelize input.png output.png
-
-# Multi-size true-bitmap outputs
-target/release/pixelize input.png out_dir --long-edges 128,56,32
-
-# Batch directory processing
-target/release/pixelize ./input_dir ./output_dir --long-edges 128,56,32
-```
-
-## Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--model` | `models/pixelization.onnx` | ONNX teacher model path |
-| `--long-edges` | `128` | Final bitmap long edge(s), comma-separated |
-| `--teacher-scale` | `4` | Teacher runs at `long_edge * teacher_scale` before cleanup |
-| `--threads` | `4` | ONNX Runtime thread count (0 = runtime default) |
-| `--merge-threshold` | `60.0` | Rust cleanup palette merge threshold |
-| `--max-colors` | `20` | Cleanup palette cap; use `0` to disable |
-| `--smooth-passes` | `2` | Cleanup neighborhood smoothing passes |
-| `--grid-refine` | `false` | Enable perfectPixel Sobel grid-boundary refinement |
-| `--grid-refine-radius` | `1` | Boundary search radius, only used with `--grid-refine` |
-
-## True Bitmap Output
-
-- `--long-edges 128` means the final PNG long edge is 128 pixels.
-- Original aspect ratio is preserved.
-- No preview upscale is generated.
-- The Wu teacher runs at `long_edge * 4`; a Rust cleanup pass collapses the known 4px lattice to final bitmap pixels.
-
-Use `--grid-refine` only for externally generated pixel-style images whose grids are visibly warped or off-grid; Wu teacher output already has an exact 4px lattice. See `docs/PERFECT_PIXEL.md`.
-
-## Architecture
+从上游项目获取以下权重：
 
 ```text
-Input → Aspect resize to long_edge*4 → Normalize [-1,1]
-    → ONNX teacher inference → Denormalize pseudo pixel art
-    → Rust known-pitch cleanup (4px cells → 1 bitmap pixel)
-    → True bitmap PNG
+checkpoints/160_net_G_A.pth
+alias_net.pth
 ```
 
-## Development
+安装 Python 导出环境并生成 ONNX：
 
 ```bash
-cargo test --workspace
-cargo build --release -p pixelization-cli --bin pixelize
+uv sync
+uv run python export/export_onnx.py \
+  --generator checkpoints/160_net_G_A.pth \
+  --alias alias_net.pth \
+  --output models/pixelization.onnx
 ```
 
-## License
+导出的 ONNX 已包含生成器和 AliasNet，Rust 运行时不会再追加图像风格后处理。
 
-- **Code**: MIT OR Apache-2.0
-- **Weights**: Non-commercial research only (from upstream)
+## 构建与运行
 
-## References
+```bash
+cargo build --release -p pixelization-cli --bin pixelize
 
-- [WuZongWei6/Pixelization](https://github.com/WuZongWei6/Pixelization) - Original PyTorch implementation
-- [theamusing/perfectPixel](https://github.com/theamusing/perfectPixel) - MIT grid-refinement algorithm (optional mode)
+target/release/pixelize input.png output.png
+target/release/pixelize input.png output.png --cell-size 8 --threads 4
+target/release/pixelize input_dir output_dir --cell-size 4
+```
+
+参数：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--model` | `models/pixelization.onnx` | ONNX 模型路径 |
+| `--cell-size` | `4` | 最终像素块边长，与上游参数一致 |
+| `--threads` | `0` | ONNX Runtime CPU 线程数，`0` 使用默认值 |
+
+## 推理流程
+
+```text
+输入图片转 RGB
+  → 按上游规则将尺寸约束到 128～4000
+  → 根据 cell_size 缩放到内部 4px 网格
+  → RGB 归一化到 [-1, 1]
+  → ONNX CPU 推理（Generator + AliasNet）
+  → 反归一化为 RGB
+  → 最近邻缩小 4 倍得到逻辑像素
+  → 最近邻放大到 cell_size
+  → 无损寻找最小最近邻逻辑网格
+  → 输出逻辑像素图
+```
+
+## 验证
+
+```bash
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+
+uv run python export/validate_parity.py \
+  --generator checkpoints/160_net_G_A.pth \
+  --alias alias_net.pth \
+  --onnx models/pixelization.onnx \
+  --images test_images
+```
+
+## 许可
+
+本项目代码使用 Apache-2.0

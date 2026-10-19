@@ -1,97 +1,74 @@
-//! CPU-only native Pixelization engine — high-quality true-bitmap pipeline.
+//! `WuZongWei6/Pixelization` 的跨平台 CPU 推理实现。
 //!
-//! ```text
-//! Input image
-//!  ↓  aspect-preserving resize to long_edge * teacher_scale (bicubic)
-//!  ↓  normalize: RGB8 → NCHW f32 in [-1, 1]
-//!  ↓  ONNX Runtime CPU inference (WuZongWei6 teacher)
-//!  ↓  denormalize: NCHW f32 → RGB8
-//!  ↓  Rust simple cleanup: 4px teacher cells → 1 bitmap pixel
-//! Output true-resolution bitmap RGB PNG
-//! ```
-//!
-//! The output PNG is the final bitmap: no upscale, no ÷4→×4 block expansion.
+//! ONNX 模型包含上游 Test Pro 的生成器与 AliasNet；Rust 侧复刻图像尺寸、
+//! 归一化和像素网格缩放，并将结果无损收缩到最小最近邻逻辑网格。
 
-pub mod cleanup;
 mod error;
+pub mod normalize;
+pub mod preprocess;
 
-pub use cleanup::{SimpleCleanupOptions, SimpleCleanupReport};
 pub use error::PixelizationError;
 
-use std::{
-    path::Path,
-    sync::Mutex,
-    time::{Duration, Instant},
-};
+use std::{path::Path, sync::Mutex};
 
 use anyhow::{Context, Result};
 use fast_image_resize as fr;
-use image::{DynamicImage, Rgb, RgbImage, RgbaImage};
+use image::{DynamicImage, Rgb, RgbImage};
 use ndarray::Array4;
 use ort::{
     session::{Session, SessionInputValue},
     value::{TensorRef, ValueType},
 };
 
-// The upstream generator is always trained at this cell size.
-const BEST_CELL_SIZE: u32 = 4;
+const MODEL_CELL_SIZE: u32 = 4;
 
-/// Detailed timings for one high-quality inference pass.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PixelizeTimings {
-    pub preprocess: Duration,
-    pub inference: Duration,
-    pub postprocess: Duration,
-    pub total: Duration,
+/// 控制最终像素块大小。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PixelizeOptions {
+    pub cell_size: u32,
 }
 
-/// An image-to-pixel-art CPU inference engine backed by ONNX Runtime.
-///
-/// `Session::run` requires exclusive access; a `Mutex` serialises calls.
-/// Create one `Pixelizer` per parallel worker for maximum throughput.
+impl Default for PixelizeOptions {
+    fn default() -> Self {
+        Self { cell_size: 4 }
+    }
+}
+
+/// 基于 ONNX Runtime CPU 后端的像素化引擎。
 pub struct Pixelizer {
     session: Mutex<Session>,
     input_name: String,
 }
 
 impl Pixelizer {
-    /// Load an ONNX model using ONNX Runtime's CPU execution provider.
-    /// Thread count is set to the runtime default (usually all physical cores).
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         Self::load_with_threads(path, 0)
     }
 
-    /// Load an ONNX model and set the ONNX Runtime intra-op CPU thread count.
-    ///
-    /// `threads = 0` keeps the runtime default.
     pub fn load_with_threads(path: impl AsRef<Path>, threads: usize) -> Result<Self> {
         let path = path.as_ref();
         let session = Session::builder()
-            .map_err(|e| anyhow::anyhow!("create ORT session builder: {e}"))?
+            .map_err(|error| anyhow::anyhow!("create ONNX Runtime session: {error}"))?
             .with_intra_threads(threads)
-            .map_err(|e| anyhow::anyhow!("set intra-op threads: {e}"))?
+            .map_err(|error| anyhow::anyhow!("set ONNX Runtime threads: {error}"))?
             .with_inter_threads(1)
-            .map_err(|e| anyhow::anyhow!("set inter-op threads: {e}"))?
+            .map_err(|error| anyhow::anyhow!("set ONNX Runtime inter-op threads: {error}"))?
             .commit_from_file(path)
-            .map_err(|e| anyhow::anyhow!("load ONNX model '{}': {e}", path.display()))?;
+            .map_err(|error| anyhow::anyhow!("load ONNX model '{}': {error}", path.display()))?;
 
-        let n_inputs = session.inputs().len();
-        if n_inputs != 1 {
-            return Err(PixelizationError::InvalidInputCount(n_inputs).into());
+        if session.inputs().len() != 1 {
+            return Err(PixelizationError::InvalidInputCount(session.inputs().len()).into());
         }
         let input = &session.inputs()[0];
         let ValueType::Tensor { shape, .. } = input.dtype() else {
             return Err(PixelizationError::InvalidModelInput(Vec::new()).into());
         };
-        let dims = shape.to_vec();
-        if dims.len() != 4 {
-            return Err(PixelizationError::InvalidModelInput(dims).into());
+        let dimensions = shape.to_vec();
+        if dimensions.len() != 4 {
+            return Err(PixelizationError::InvalidModelInput(dimensions).into());
         }
-        // Support both static (dims[i] > 0) and dynamic (dims[i] <= 0) shapes
-        // dim[0] can be 1 (static batch) or -1 (dynamic batch)
-        // dim[1] must be 3 (RGB channels)
-        if dims[1] != 3 {
-            return Err(PixelizationError::UnsupportedInputShape(dims).into());
+        if dimensions[1] != 3 {
+            return Err(PixelizationError::UnsupportedInputShape(dimensions).into());
         }
 
         Ok(Self {
@@ -100,232 +77,158 @@ impl Pixelizer {
         })
     }
 
-    /// High-quality true-bitmap pipeline:
-    ///
-    /// 1. Resize source to `long_edge * teacher_scale` while preserving aspect.
-    /// 2. Run the WuZongWei6 teacher ONNX at that high-resolution lattice.
-    /// 3. Collapse known 4px teacher cells using the Rust simple cleanup pass.
-    /// 4. Return the true-resolution bitmap (no upscale).
-    pub fn process_bitmap_timed(
-        &self,
-        image: &DynamicImage,
-        long_edge: u32,
-        teacher_scale: u32,
-        cleanup_options: cleanup::SimpleCleanupOptions,
-    ) -> Result<(DynamicImage, PixelizeTimings, cleanup::SimpleCleanupReport)> {
-        if long_edge == 0 || teacher_scale == 0 {
-            return Err(PixelizationError::EmptyGrid.into());
+    /// 按上游 `test_pro.py` 的几何流程处理一张图片。
+    pub fn process(&self, image: &DynamicImage, options: PixelizeOptions) -> Result<DynamicImage> {
+        if options.cell_size == 0 {
+            return Err(PixelizationError::InvalidCellSize.into());
         }
-        let teacher_long_edge = long_edge
-            .checked_mul(teacher_scale)
-            .ok_or(PixelizationError::EmptyGrid)?;
-        if teacher_long_edge % BEST_CELL_SIZE != 0 {
+
+        let source = preprocess::rescale_into_bounds(image.to_rgb8())?;
+        let target_width = source.width() / options.cell_size * MODEL_CELL_SIZE;
+        let target_height = source.height() / options.cell_size * MODEL_CELL_SIZE;
+        if target_width == 0 || target_height == 0 {
             return Err(PixelizationError::EmptyGrid.into());
         }
 
-        let total_start = Instant::now();
-        let preprocess_start = Instant::now();
-        let source = image.to_rgba8();
-        let (target_w, target_h) =
-            aspect_dims(source.width(), source.height(), teacher_long_edge)?;
-        let model_input = resize_rgba_bicubic(&source, target_w, target_h)?;
-        let nchw = rgba_to_normalized_nchw(&model_input);
-        let preprocess = preprocess_start.elapsed();
+        let model_input = resize_rgb_bicubic(&source, target_width, target_height)?;
+        let tensor = rgb_to_normalized_nchw(&model_input);
+        let generated = tensor_to_rgb(self.infer(tensor)?)?;
 
-        let inference_start = Instant::now();
-        let output_tensor = self.infer(nchw)?;
-        let inference = inference_start.elapsed();
+        let grid_width = generated.width() / MODEL_CELL_SIZE;
+        let grid_height = generated.height() / MODEL_CELL_SIZE;
+        if grid_width == 0 || grid_height == 0 {
+            return Err(PixelizationError::EmptyGrid.into());
+        }
+        let grid = resize_rgb_nearest(&generated, grid_width, grid_height)?;
+        let output = resize_rgb_nearest(
+            &grid,
+            grid_width * options.cell_size,
+            grid_height * options.cell_size,
+        )?;
+        let normalized = normalize::smallest_lossless_grid(&output);
 
-        let postprocess_start = Instant::now();
-        let pseudo = tensor_to_rgb(output_tensor)?;
-        let (cleaned, report) = cleanup::clean_known_pitch(&pseudo, cleanup_options);
-        let postprocess = postprocess_start.elapsed();
-        let total = total_start.elapsed();
-
-        Ok((
-            DynamicImage::ImageRgb8(cleaned),
-            PixelizeTimings {
-                preprocess,
-                inference,
-                postprocess,
-                total,
-            },
-            report,
-        ))
+        Ok(DynamicImage::ImageRgb8(normalized))
     }
 
     fn infer(&self, input: Array4<f32>) -> Result<ndarray::ArrayD<f32>> {
         let tensor = TensorRef::from_array_view(&input)
-            .map_err(|e| anyhow::anyhow!("build input tensor: {e}"))?;
+            .map_err(|error| anyhow::anyhow!("create model input tensor: {error}"))?;
         let mut session = self
             .session
             .lock()
-            .map_err(|_| anyhow::anyhow!("ORT session mutex poisoned"))?;
+            .map_err(|_| anyhow::anyhow!("ONNX Runtime session lock poisoned"))?;
         let outputs = session
             .run(ort::inputs![self.input_name.as_str() => SessionInputValue::from(tensor)])
-            .map_err(|e| anyhow::anyhow!("ORT inference: {e}"))?;
+            .map_err(|error| anyhow::anyhow!("run ONNX inference: {error}"))?;
         if outputs.len() == 0 {
             return Err(PixelizationError::MissingModelOutput.into());
         }
-        let (shape, data) = outputs[0]
+        let (shape, values) = outputs[0]
             .try_extract_tensor::<f32>()
-            .map_err(|e| anyhow::anyhow!("extract f32 output: {e}"))?;
-        ndarray::ArrayD::from_shape_vec(shape.to_ixdyn(), data.to_vec())
-            .context("copy output tensor to ndarray")
+            .map_err(|error| anyhow::anyhow!("extract model output tensor: {error}"))?;
+        ndarray::ArrayD::from_shape_vec(shape.to_ixdyn(), values.to_vec())
+            .context("copy model output tensor")
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn aspect_dims(w: u32, h: u32, long_edge: u32) -> Result<(u32, u32)> {
-    if w == 0 || h == 0 || long_edge == 0 || long_edge % BEST_CELL_SIZE != 0 {
-        return Err(PixelizationError::EmptyGrid.into());
+fn rgb_to_normalized_nchw(image: &RgbImage) -> Array4<f32> {
+    let (width, height) = image.dimensions();
+    let plane = (width * height) as usize;
+    let mut values = vec![0.0; plane * 3];
+    for (index, pixel) in image.pixels().enumerate() {
+        values[index] = f32::from(pixel[0]) / 127.5 - 1.0;
+        values[plane + index] = f32::from(pixel[1]) / 127.5 - 1.0;
+        values[plane * 2 + index] = f32::from(pixel[2]) / 127.5 - 1.0;
     }
-    let (mut tw, mut th) = if w >= h {
-        let short = ((h as f64 * long_edge as f64 / w as f64) / BEST_CELL_SIZE as f64).round()
-            as u32
-            * BEST_CELL_SIZE;
-        (long_edge, short.max(BEST_CELL_SIZE))
-    } else {
-        let short = ((w as f64 * long_edge as f64 / h as f64) / BEST_CELL_SIZE as f64).round()
-            as u32
-            * BEST_CELL_SIZE;
-        (short.max(BEST_CELL_SIZE), long_edge)
-    };
-    tw = (tw / BEST_CELL_SIZE) * BEST_CELL_SIZE;
-    th = (th / BEST_CELL_SIZE) * BEST_CELL_SIZE;
-    if tw == 0 || th == 0 {
-        return Err(PixelizationError::EmptyGrid.into());
-    }
-    Ok((tw, th))
+    Array4::from_shape_vec((1, 3, height as usize, width as usize), values)
+        .expect("image dimensions determine tensor size")
 }
 
-/// Convert RGBA8 HWC to normalized NCHW f32 in one pass.
-/// Normalization: `(x / 255.0 − 0.5) / 0.5`  ⟺  `x / 127.5 − 1.0`.
-pub(crate) fn rgba_to_normalized_nchw(image: &RgbaImage) -> Array4<f32> {
-    let (w, h) = image.dimensions();
-    let plane = (w * h) as usize;
-    let mut data = vec![0.0f32; plane * 3];
-    for (i, pixel) in image.pixels().enumerate() {
-        data[i] = f32::from(pixel[0]) / 127.5 - 1.0;
-        data[plane + i] = f32::from(pixel[1]) / 127.5 - 1.0;
-        data[2 * plane + i] = f32::from(pixel[2]) / 127.5 - 1.0;
-    }
-    Array4::from_shape_vec((1, 3, h as usize, w as usize), data).expect("known shape")
-}
-
-/// Denormalize NCHW f32 output `[-1, 1]` → `RGB8` with clamp.
 fn tensor_to_rgb(tensor: ndarray::ArrayD<f32>) -> Result<RgbImage> {
-    let sh = tensor.shape();
-    if sh.len() != 4 || sh[0] != 1 || sh[1] != 3 {
-        return Err(PixelizationError::InvalidModelOutput(sh.to_vec()).into());
+    let shape = tensor.shape();
+    if shape.len() != 4 || shape[0] != 1 || shape[1] != 3 {
+        return Err(PixelizationError::InvalidModelOutput(shape.to_vec()).into());
     }
-    let (h, w) = (sh[2] as u32, sh[3] as u32);
-    let plane = (w * h) as usize;
-    let vals = tensor.as_slice().context("model output not contiguous")?;
-    let mut img = RgbImage::new(w, h);
-    for (i, px) in img.pixels_mut().enumerate() {
-        let f = |v: f32| ((v + 1.0) * 0.5 * 255.0).clamp(0.0, 255.0) as u8;
-        *px = Rgb([f(vals[i]), f(vals[plane + i]), f(vals[2 * plane + i])]);
+
+    let (height, width) = (shape[2] as u32, shape[3] as u32);
+    let plane = (width * height) as usize;
+    let values = tensor
+        .as_slice()
+        .context("model output is not contiguous")?;
+    let mut image = RgbImage::new(width, height);
+    for (index, pixel) in image.pixels_mut().enumerate() {
+        let channel = |value: f32| ((value + 1.0) * 127.5).clamp(0.0, 255.0) as u8;
+        *pixel = Rgb([
+            channel(values[index]),
+            channel(values[plane + index]),
+            channel(values[plane * 2 + index]),
+        ]);
     }
-    Ok(img)
+    Ok(image)
 }
 
-fn resize_rgba_bicubic(input: &RgbaImage, w: u32, h: u32) -> Result<RgbaImage> {
-    if input.width() == w && input.height() == h {
+fn resize_rgb_bicubic(input: &RgbImage, width: u32, height: u32) -> Result<RgbImage> {
+    resize_rgb(
+        input,
+        width,
+        height,
+        fr::ResizeAlg::Convolution(fr::FilterType::CatmullRom),
+    )
+}
+
+fn resize_rgb_nearest(input: &RgbImage, width: u32, height: u32) -> Result<RgbImage> {
+    resize_rgb(input, width, height, fr::ResizeAlg::Nearest)
+}
+
+fn resize_rgb(
+    input: &RgbImage,
+    width: u32,
+    height: u32,
+    algorithm: fr::ResizeAlg,
+) -> Result<RgbImage> {
+    if input.dimensions() == (width, height) {
         return Ok(input.clone());
     }
-    let src = fr::images::Image::from_vec_u8(
+    let source = fr::images::Image::from_vec_u8(
         input.width(),
         input.height(),
         input.as_raw().to_vec(),
-        fr::PixelType::U8x4,
+        fr::PixelType::U8x3,
     )
-    .context("bicubic resize src")?;
-    let mut dst = fr::images::Image::new(w, h, fr::PixelType::U8x4);
+    .context("create resize source")?;
+    let mut destination = fr::images::Image::new(width, height, fr::PixelType::U8x3);
     fr::Resizer::new()
         .resize(
-            &src,
-            &mut dst,
-            Some(
-                &fr::ResizeOptions::new()
-                    .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::CatmullRom)),
-            ),
+            &source,
+            &mut destination,
+            Some(&fr::ResizeOptions::new().resize_alg(algorithm)),
         )
-        .context("bicubic resize")?;
-    RgbaImage::from_raw(w, h, dst.into_vec()).context("bicubic resize output")
+        .context("resize image")?;
+    RgbImage::from_raw(width, height, destination.into_vec()).context("create resized image")
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn nchw_normalization_layout_and_values() {
-        let img = RgbaImage::from_raw(1, 1, vec![0u8, 127, 255, 42]).unwrap();
-        let data = rgba_to_normalized_nchw(&img);
-        assert_eq!(data.shape(), &[1, 3, 1, 1]);
-        assert!((data[[0, 0, 0, 0]] - (-1.0_f32)).abs() < 1e-6, "R=-1 expected");
-        let expected_g = 127.0_f32 / 127.5 - 1.0;
-        assert!((data[[0, 1, 0, 0]] - expected_g).abs() < 1e-5, "G mismatch");
-        assert!((data[[0, 2, 0, 0]] - 1.0_f32).abs() < 1e-5, "B=1 expected");
+    fn normalization_uses_channel_first_layout() {
+        let image = RgbImage::from_raw(2, 1, vec![0, 127, 255, 255, 64, 32]).unwrap();
+        let tensor = rgb_to_normalized_nchw(&image);
+        assert_eq!(tensor.shape(), &[1, 3, 1, 2]);
+        assert_eq!(tensor[[0, 0, 0, 0]], -1.0);
+        assert_eq!(tensor[[0, 0, 0, 1]], 1.0);
+        assert_eq!(tensor[[0, 2, 0, 0]], 1.0);
     }
 
     #[test]
-    fn nchw_layout_is_channel_first() {
-        let mut img = RgbaImage::new(2, 2);
-        img.put_pixel(0, 0, image::Rgba([10, 20, 30, 255]));
-        img.put_pixel(1, 0, image::Rgba([40, 50, 60, 255]));
-        img.put_pixel(0, 1, image::Rgba([70, 80, 90, 255]));
-        img.put_pixel(1, 1, image::Rgba([100, 110, 120, 255]));
-        let data = rgba_to_normalized_nchw(&img);
-        assert_eq!(data.shape(), &[1, 3, 2, 2]);
-        assert!((data[[0, 0, 0, 0]] - (10.0_f32 / 127.5 - 1.0)).abs() < 1e-5);
-        assert!((data[[0, 0, 0, 1]] - (40.0_f32 / 127.5 - 1.0)).abs() < 1e-5);
-    }
-
-    #[test]
-    fn tensor_to_rgb_roundtrip() {
-        let mut img = RgbaImage::new(2, 2);
-        img.put_pixel(0, 0, image::Rgba([0, 128, 255, 255]));
-        img.put_pixel(1, 0, image::Rgba([64, 192, 32, 255]));
-        img.put_pixel(0, 1, image::Rgba([255, 0, 128, 255]));
-        img.put_pixel(1, 1, image::Rgba([100, 100, 100, 255]));
-        let nchw = rgba_to_normalized_nchw(&img);
-        let dyn_arr = nchw.into_dyn();
-        let recovered = tensor_to_rgb(dyn_arr).unwrap();
-        for (orig, rec) in img.pixels().zip(recovered.pixels()) {
-            for c in 0..3 {
-                let diff = (i32::from(orig[c]) - i32::from(rec[c])).unsigned_abs();
-                assert!(diff <= 1, "channel {c}: orig={} rec={}", orig[c], rec[c]);
+    fn tensor_conversion_preserves_rgb_values() {
+        let image = RgbImage::from_raw(2, 1, vec![0, 128, 255, 64, 192, 32]).unwrap();
+        let output = tensor_to_rgb(rgb_to_normalized_nchw(&image).into_dyn()).unwrap();
+        for (expected, actual) in image.pixels().zip(output.pixels()) {
+            for channel in 0..3 {
+                assert!((i16::from(expected[channel]) - i16::from(actual[channel])).abs() <= 1);
             }
         }
-    }
-
-    #[test]
-    fn aspect_dims_landscape() {
-        let (tw, th) = aspect_dims(356, 260, 512).unwrap();
-        assert_eq!(tw, 512);
-        assert_eq!(th, 372);
-    }
-
-    #[test]
-    fn aspect_dims_portrait() {
-        let (tw, th) = aspect_dims(300, 600, 128).unwrap();
-        assert_eq!(th, 128);
-        assert!(tw <= 128);
-        assert_eq!(tw % 4, 0);
-    }
-
-    #[test]
-    fn aspect_dims_rejects_zero() {
-        assert!(aspect_dims(0, 100, 128).is_err());
-        assert!(aspect_dims(100, 100, 0).is_err());
     }
 }

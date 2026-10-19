@@ -10,6 +10,8 @@ pub enum PixelizationError {
     InvalidModelOutput(Vec<usize>),
     #[error("model has no output tensors")]
     MissingModelOutput,
-    #[error("invalid target long edge or source dimensions for the 4px teacher lattice")]
+    #[error("cell size must be greater than zero")]
+    InvalidCellSize,
+    #[error("image dimensions produce an empty 4px model grid")]
     EmptyGrid,
 }
