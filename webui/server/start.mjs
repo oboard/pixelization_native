@@ -12,7 +12,8 @@ createServer(async (req, res) => {
   if (await annotationApi(req, res)) return;
   const url = new URL(req.url, 'http://localhost');
   const pathname = decodeURIComponent(url.pathname);
-  const file = path.resolve(root, 'dist', `.${pathname}`);
+  const targetPath = pathname === '/' ? '/index.html' : pathname;
+  const file = path.resolve(root, 'dist', `.${targetPath}`);
   if (!file.startsWith(path.join(root, 'dist') + path.sep)) { res.writeHead(403); res.end(); return; }
   try {
     const data = await readFile(file);
