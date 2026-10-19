@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
@@ -157,6 +157,33 @@ export async function annotationApi(req, res) {
     if (segments[2] === 'samples' && safeId.test(id || '') && segments.length === 4 && req.method === 'GET') {
       const record = JSON.parse(await readFile(path.join(dataRoot, 'indices', `${id}.json`), 'utf8'));
       json(res, 200, { ...record, paths: samplePaths(id) }); return true;
+    }
+    if (segments[2] === 'samples' && safeId.test(id || '') && segments[4] === 'status' && req.method === 'POST') {
+      const input = await body(req);
+      const nextStatus = input.status;
+      if (!['pending', 'accepted', 'edited'].includes(nextStatus)) throw new Error('无效的状态值');
+      const file = path.join(dataRoot, 'indices', `${id}.json`);
+      const record = JSON.parse(await readFile(file, 'utf8'));
+      record.status = nextStatus;
+      const metaFile = path.join(dataRoot, 'meta', `${id}.json`);
+      if (nextStatus === 'pending') {
+        try { await unlink(metaFile); } catch {}
+      } else {
+        let meta;
+        try {
+          meta = JSON.parse(await readFile(metaFile, 'utf8'));
+          meta.accepted_without_edit = nextStatus === 'accepted';
+        } catch {
+          const paths = samplePaths(id);
+          meta = { id, ...paths, width: record.width, height: record.height,
+            model_version: record.model_version, palette: 'MARD',
+            accepted_without_edit: nextStatus === 'accepted',
+            changed_pixels: record.changed_pixels || 0, timestamp: new Date().toISOString() };
+        }
+        await atomicWrite(metaFile, JSON.stringify(meta, null, 2));
+      }
+      await atomicWrite(file, JSON.stringify(record, null, 2));
+      json(res, 200, { success: true, id, status: nextStatus }); return true;
     }
     if (segments[2] === 'samples' && safeId.test(id || '') && segments[4] === 'save' && req.method === 'POST') {
       const input = await body(req);

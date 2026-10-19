@@ -1,0 +1,958 @@
+#!/usr/bin/env node
+
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const projectRoot = path.resolve(__dirname, '..');
+const defaultDataRoot = path.join(projectRoot, 'webui/data');
+const mappingFile = path.join(projectRoot, 'webui/src/app/colorSystemMapping.json');
+
+// Import pngjs
+let PNG;
+try {
+  const mod = await import(path.join(projectRoot, 'webui/node_modules/pngjs/lib/png.js'));
+  PNG = mod.PNG;
+} catch (e) {
+  console.error('Error importing pngjs from webui/node_modules/pngjs. Please run pnpm install in webui.');
+  process.exit(1);
+}
+
+// Digits font 3x5 for rulers
+const DIGITS = {
+  '0': [0b111, 0b101, 0b101, 0b101, 0b111],
+  '1': [0b010, 0b110, 0b010, 0b010, 0b111],
+  '2': [0b111, 0b001, 0b111, 0b100, 0b111],
+  '3': [0b111, 0b001, 0b111, 0b001, 0b111],
+  '4': [0b101, 0b101, 0b111, 0b001, 0b001],
+  '5': [0b111, 0b100, 0b111, 0b001, 0b111],
+  '6': [0b111, 0b100, 0b111, 0b101, 0b111],
+  '7': [0b111, 0b001, 0b010, 0b010, 0b010],
+  '8': [0b111, 0b101, 0b111, 0b101, 0b111],
+  '9': [0b111, 0b101, 0b111, 0b001, 0b111],
+};
+
+// Load palette
+const mapping = JSON.parse(await readFile(mappingFile, 'utf8'));
+const palette = Object.entries(mapping).map(([hex, names], index) => ({
+  index,
+  hex: hex.toUpperCase(),
+  code: names.MARD,
+  rgb: [1, 3, 5].map(at => Number.parseInt(hex.slice(at, at + 2), 16)),
+}));
+
+const codeToColor = new Map(palette.map(c => [c.code.toUpperCase(), c]));
+const hexToColor = new Map(palette.map(c => [c.hex.toUpperCase(), c]));
+
+function rgbDist(r1, g1, b1, r2, g2, b2) {
+  const dr = r1 - r2, dg = g1 - g2, db = b1 - b2;
+  return dr * dr + dg * dg + db * db;
+}
+
+function resolveColor(input) {
+  if (input === undefined || input === null) return -1;
+  const s = String(input).trim().toUpperCase();
+  if (['-1', 'NONE', 'TRANS', 'TRANSPARENT', 'NULL', 'CLEAR'].includes(s)) return -1;
+  if (/^\d+$/.test(s)) {
+    const idx = Number.parseInt(s, 10);
+    if (idx >= 0 && idx < palette.length) return idx;
+  }
+  if (codeToColor.has(s)) return codeToColor.get(s).index;
+  const cleanHex = s.startsWith('#') ? s : `#${s}`;
+  if (hexToColor.has(cleanHex)) return hexToColor.get(cleanHex).index;
+  if (/^#[0-9A-F]{6}$/i.test(cleanHex)) {
+    const r = Number.parseInt(cleanHex.slice(1, 3), 16);
+    const g = Number.parseInt(cleanHex.slice(3, 5), 16);
+    const b = Number.parseInt(cleanHex.slice(5, 7), 16);
+    let best = 0, bestDist = Infinity;
+    for (const c of palette) {
+      const d = rgbDist(r, g, b, c.rgb[0], c.rgb[1], c.rgb[2]);
+      if (d < bestDist) { bestDist = d; best = c.index; }
+    }
+    return best;
+  }
+  throw new Error(`无法识别颜色: "${input}"。可用 MARD 色号 (如 H07)、HEX (如 #000000)、索引或 "transparent"`);
+}
+
+function colorDesc(index) {
+  if (index < 0) return '透明 (-1)';
+  const c = palette[index];
+  return `${c.code} (${c.hex}, #${index})`;
+}
+
+async function atomicWrite(file, content) {
+  const temporary = `${file}.${process.pid}.tmp`;
+  await writeFile(temporary, content);
+  await rename(temporary, file);
+}
+
+function resizeBilinear(src, targetW, targetH) {
+  const dst = new PNG({ width: targetW, height: targetH });
+  const xRatio = src.width / targetW;
+  const yRatio = src.height / targetH;
+  for (let y = 0; y < targetH; y++) {
+    for (let x = 0; x < targetW; x++) {
+      const srcX = Math.min(src.width - 1, x * xRatio);
+      const srcY = Math.min(src.height - 1, y * yRatio);
+      const xFloor = Math.floor(srcX);
+      const yFloor = Math.floor(srcY);
+      const xCeil = Math.min(src.width - 1, Math.ceil(srcX));
+      const yCeil = Math.min(src.height - 1, Math.ceil(srcY));
+      const xWeight = srcX - xFloor;
+      const yWeight = srcY - yFloor;
+
+      const idxTL = (yFloor * src.width + xFloor) * 4;
+      const idxTR = (yFloor * src.width + xCeil) * 4;
+      const idxBL = (yCeil * src.width + xFloor) * 4;
+      const idxBR = (yCeil * src.width + xCeil) * 4;
+      const dstIdx = (y * targetW + x) * 4;
+
+      for (let c = 0; c < 4; c++) {
+        const top = src.data[idxTL + c] * (1 - xWeight) + src.data[idxTR + c] * xWeight;
+        const bottom = src.data[idxBL + c] * (1 - xWeight) + src.data[idxBR + c] * xWeight;
+        dst.data[dstIdx + c] = Math.round(top * (1 - yWeight) + bottom * yWeight);
+      }
+    }
+  }
+  return dst;
+}
+
+function drawDigit(png, digit, startX, startY, color = [100, 120, 115]) {
+  const pattern = DIGITS[digit];
+  if (!pattern) return;
+  for (let row = 0; row < 5; row++) {
+    const bits = pattern[row];
+    for (let col = 0; col < 3; col++) {
+      if ((bits >> (2 - col)) & 1) {
+        const px = startX + col, py = startY + row;
+        if (px >= 0 && px < png.width && py >= 0 && py < png.height) {
+          const idx = (py * png.width + px) * 4;
+          png.data[idx] = color[0]; png.data[idx + 1] = color[1]; png.data[idx + 2] = color[2]; png.data[idx + 3] = 255;
+        }
+      }
+    }
+  }
+}
+
+function drawNumber(png, num, startX, startY, color = [100, 120, 115]) {
+  const str = String(num);
+  let curX = startX;
+  for (const ch of str) {
+    drawDigit(png, ch, curX, startY, color);
+    curX += 4;
+  }
+}
+
+function renderPixelGrid(width, height, pixels, scale = 16, drawRuler = true) {
+  const rulerLeft = drawRuler ? 26 : 0;
+  const rulerTop = drawRuler ? 20 : 0;
+  const gridW = width * scale;
+  const gridH = height * scale;
+  const totalW = gridW + rulerLeft;
+  const totalH = gridH + rulerTop;
+  const png = new PNG({ width: totalW, height: totalH });
+
+  // Background
+  png.data.fill(248);
+
+  // Ruler numbers
+  if (drawRuler) {
+    for (let x = 0; x < width; x += (width > 50 ? 10 : 5)) {
+      const px = rulerLeft + x * scale + Math.floor(scale / 2) - 2;
+      drawNumber(png, x, px, 8);
+    }
+    for (let y = 0; y < height; y += (height > 50 ? 10 : 5)) {
+      const py = rulerTop + y * scale + Math.floor(scale / 2) - 2;
+      drawNumber(png, y, 4, py);
+    }
+  }
+
+  // Draw cells
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const colorIdx = pixels[y * width + x];
+      const startX = rulerLeft + x * scale;
+      const startY = rulerTop + y * scale;
+      let rgb;
+      if (colorIdx < 0) {
+        // Checkerboard
+        rgb = null;
+      } else {
+        rgb = palette[colorIdx].rgb;
+      }
+
+      for (let dy = 0; dy < scale; dy++) {
+        for (let dx = 0; dx < scale; dx++) {
+          const px = startX + dx;
+          const py = startY + dy;
+          const idx = (py * totalW + px) * 4;
+
+          // Grid border
+          const isBorder = (dx === scale - 1 || dy === scale - 1);
+          const isMajor = (x % 5 === 4 && dx === scale - 1) || (y % 5 === 4 && dy === scale - 1);
+
+          if (rgb) {
+            if (isBorder && scale >= 6) {
+              const borderDark = isMajor ? 0.75 : 0.88;
+              png.data[idx] = Math.round(rgb[0] * borderDark);
+              png.data[idx + 1] = Math.round(rgb[1] * borderDark);
+              png.data[idx + 2] = Math.round(rgb[2] * borderDark);
+            } else {
+              png.data[idx] = rgb[0];
+              png.data[idx + 1] = rgb[1];
+              png.data[idx + 2] = rgb[2];
+            }
+          } else {
+            // Checkerboard for transparent
+            const check = ((Math.floor(px / 4) + Math.floor(py / 4)) % 2 === 0);
+            const val = check ? 238 : 222;
+            png.data[idx] = val; png.data[idx + 1] = val + 4; png.data[idx + 2] = val + 2;
+          }
+          png.data[idx + 3] = 255;
+        }
+      }
+    }
+  }
+  return png;
+}
+
+function cleanColorFringe(pixels, width, height) {
+  if (width < 3 || height < 3 || pixels.length !== width * height) return null;
+  const blackIndex = palette.findIndex(c => c.hex === '#000000');
+  if (blackIndex < 0) return null;
+
+  const isVivid = (idx) => {
+    if (idx < 0 || idx >= palette.length) return false;
+    const ch = palette[idx].rgb;
+    return Math.max(...ch) - Math.min(...ch) >= 60 && Math.max(...ch) >= 150;
+  };
+  const counts = new Map();
+  let vividTotal = 0;
+  for (const idx of pixels) {
+    if (!isVivid(idx)) continue;
+    counts.set(idx, (counts.get(idx) || 0) + 1);
+    vividTotal++;
+  }
+  let fillIndex = -1, fillCount = 0;
+  for (const [idx, count] of counts) {
+    if (count > fillCount) { fillIndex = idx; fillCount = count; }
+  }
+  if (fillCount < width * height * 0.12 || fillCount < vividTotal * 0.72) return null;
+
+  const neighbors4 = (idx) => {
+    const x = idx % width, y = Math.floor(idx / width);
+    return [
+      x > 0 ? idx - 1 : -1, x + 1 < width ? idx + 1 : -1,
+      y > 0 ? idx - width : -1, y + 1 < height ? idx + width : -1
+    ];
+  };
+
+  const visited = new Uint8Array(pixels.length);
+  let mainComponent = [];
+  for (let start = 0; start < pixels.length; start++) {
+    if (pixels[start] !== fillIndex || visited[start]) continue;
+    const component = [start];
+    visited[start] = 1;
+    for (let head = 0; head < component.length; head++) {
+      for (const n of neighbors4(component[head])) {
+        if (n >= 0 && !visited[n] && pixels[n] === fillIndex) {
+          visited[n] = 1;
+          component.push(n);
+        }
+      }
+    }
+    if (component.length > mainComponent.length) mainComponent = component;
+  }
+  if (mainComponent.length < fillCount * 0.8) return null;
+
+  const distance = new Int8Array(pixels.length).fill(-1);
+  const queue = [...mainComponent];
+  for (const idx of mainComponent) distance[idx] = 0;
+  for (let head = 0; head < queue.length; head++) {
+    const idx = queue[head];
+    if (distance[idx] >= 1) continue;
+    const x = idx % width, y = Math.floor(idx / width);
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const nx = x + dx, ny = y + dy;
+      if ((!dx && !dy) || nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+      const n = ny * width + nx;
+      if (distance[n] !== -1) continue;
+      distance[n] = distance[idx] + 1;
+      queue.push(n);
+    }
+  }
+
+  const result = [...pixels];
+  let outlinePixels = 0, clearedPixels = 0;
+  for (let i = 0; i < result.length; i++) {
+    if (distance[i] === 1 && result[i] !== blackIndex) {
+      result[i] = blackIndex;
+      outlinePixels++;
+    } else if (distance[i] !== 0 && distance[i] !== 1 && result[i] >= 0) {
+      result[i] = -1;
+      clearedPixels++;
+    }
+  }
+  return { pixels: result, outlinePixels, clearedPixels, fillIndex };
+}
+
+function removeBackground(pixels, width, height) {
+  const borderCounts = new Map();
+  const countBorder = (idx) => {
+    const c = pixels[idx];
+    if (c >= 0) borderCounts.set(c, (borderCounts.get(c) || 0) + 1);
+  };
+  for (let x = 0; x < width; x++) {
+    countBorder(x);
+    if (height > 1) countBorder((height - 1) * width + x);
+  }
+  for (let y = 1; y < height - 1; y++) {
+    countBorder(y * width);
+    if (width > 1) countBorder(y * width + width - 1);
+  }
+  if (!borderCounts.size) return null;
+
+  let bg = -1, maxCount = -1;
+  for (const [c, count] of borderCounts) {
+    if (count > maxCount) { bg = c; maxCount = count; }
+  }
+
+  const next = [...pixels];
+  const stack = [];
+  const pushIfBg = (idx) => {
+    if (next[idx] !== bg) return;
+    next[idx] = -1;
+    stack.push(idx);
+  };
+  for (let x = 0; x < width; x++) {
+    pushIfBg(x);
+    if (height > 1) pushIfBg((height - 1) * width + x);
+  }
+  for (let y = 1; y < height - 1; y++) {
+    pushIfBg(y * width);
+    if (width > 1) pushIfBg(y * width + width - 1);
+  }
+  for (let head = 0; head < stack.length; head++) {
+    const idx = stack[head];
+    const x = idx % width, y = Math.floor(idx / width);
+    if (x > 0) pushIfBg(idx - 1);
+    if (x + 1 < width) pushIfBg(idx + 1);
+    if (y > 0) pushIfBg(idx - width);
+    if (y + 1 < height) pushIfBg(idx + width);
+  }
+  return { pixels: next, clearedCount: stack.length, bgColor: bg };
+}
+
+function floodFill(pixels, width, height, startX, startY, targetColor) {
+  if (startX < 0 || startX >= width || startY < 0 || startY >= height) return pixels;
+  const startIdx = startY * width + startX;
+  const origColor = pixels[startIdx];
+  if (origColor === targetColor) return pixels;
+
+  const next = [...pixels];
+  const stack = [startIdx];
+  next[startIdx] = targetColor;
+
+  while (stack.length > 0) {
+    const idx = stack.pop();
+    const x = idx % width, y = Math.floor(idx / width);
+    const neighbors = [
+      x > 0 ? idx - 1 : -1, x + 1 < width ? idx + 1 : -1,
+      y > 0 ? idx - width : -1, y + 1 < height ? idx + width : -1
+    ];
+    for (const n of neighbors) {
+      if (n >= 0 && next[n] === origColor) {
+        next[n] = targetColor;
+        stack.push(n);
+      }
+    }
+  }
+  return next;
+}
+
+function drawLine(pixels, width, height, x0, y0, x1, y1, color) {
+  const next = [...pixels];
+  const dx = Math.abs(x1 - x0);
+  const dy = Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1;
+  const sy = y0 < y1 ? 1 : -1;
+  let err = dx - dy;
+  let curX = x0, curY = y0;
+
+  while (true) {
+    if (curX >= 0 && curX < width && curY >= 0 && curY < height) {
+      next[curY * width + curX] = color;
+    }
+    if (curX === x1 && curY === y1) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; curX += sx; }
+    if (e2 < dx) { err += dx; curY += sy; }
+  }
+  return next;
+}
+
+function drawRect(pixels, width, height, x0, y0, x1, y1, color, fill = false) {
+  const next = [...pixels];
+  const minX = Math.max(0, Math.min(x0, x1));
+  const maxX = Math.min(width - 1, Math.max(x0, x1));
+  const minY = Math.max(0, Math.min(y0, y1));
+  const maxY = Math.min(height - 1, Math.max(y0, y1));
+
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      if (fill || x === minX || x === maxX || y === minY || y === maxY) {
+        next[y * width + x] = color;
+      }
+    }
+  }
+  return next;
+}
+
+async function generateSideBySidePreview(dataRoot, sampleRecord, outputPath) {
+  const { id, width, height } = sampleRecord;
+  const sourcePath = path.join(dataRoot, 'sources', `${id}.png`);
+  let sourcePng;
+  try {
+    sourcePng = PNG.sync.read(await readFile(sourcePath));
+  } catch {
+    sourcePng = new PNG({ width: 256, height: 256 });
+    sourcePng.data.fill(240);
+  }
+
+  const scale = Math.max(3, Math.min(22, Math.floor(420 / Math.max(width, height))));
+  const predPixels = sampleRecord.indices;
+  const currentPixels = sampleRecord.corrected_indices || sampleRecord.indices;
+
+  const predGrid = renderPixelGrid(width, height, predPixels, scale, false);
+  const currGrid = renderPixelGrid(width, height, currentPixels, scale, true);
+
+  const canvasW = currGrid.width;
+  const canvasH = currGrid.height;
+  const resizedSource = resizeBilinear(sourcePng, canvasW, canvasH);
+
+  const margin = 20;
+  const headerH = 34;
+  const totalW = margin + (canvasW * 3) + (margin * 2) + margin;
+  const totalH = margin + headerH + canvasH + margin;
+
+  const combined = new PNG({ width: totalW, height: totalH });
+  combined.data.fill(244); // light clean neutral background
+
+  // Composite 3 panels
+  const panels = [
+    { title: '01 原图', png: resizedSource, x: margin },
+    { title: '02 模型原始预测', png: predGrid, x: margin + canvasW + margin },
+    { title: `03 纠错画布 (${sampleRecord.changed_pixels || 0} 已改)`, png: currGrid, x: margin + (canvasW + margin) * 2 }
+  ];
+
+  for (const p of panels) {
+    const startX = p.x;
+    const startY = margin + headerH;
+    for (let y = 0; y < p.png.height; y++) {
+      for (let x = 0; x < p.png.width; x++) {
+        const srcIdx = (y * p.png.width + x) * 4;
+        const dstIdx = ((startY + y) * totalW + (startX + x)) * 4;
+        combined.data[dstIdx] = p.png.data[srcIdx];
+        combined.data[dstIdx + 1] = p.png.data[srcIdx + 1];
+        combined.data[dstIdx + 2] = p.png.data[srcIdx + 2];
+        combined.data[dstIdx + 3] = p.png.data[srcIdx + 3];
+      }
+    }
+  }
+
+  await atomicWrite(outputPath, PNG.sync.write(combined));
+  return outputPath;
+}
+
+// CLI Arg parser
+function parseArgs(args) {
+  const parsed = { _: [] };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith('--')) {
+      const key = a.slice(2);
+      if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
+        parsed[key] = args[++i];
+      } else {
+        parsed[key] = true;
+      }
+    } else {
+      parsed._.push(a);
+    }
+  }
+  return parsed;
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const command = args._[0] || 'help';
+  const dataRoot = args['data-dir'] || defaultDataRoot;
+
+  try {
+    if (command === 'help') {
+      console.log(`
+Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
+==============================================
+用法:
+  node scripts/pixel_annotate.mjs <command> [options]
+
+常用命令:
+  list                 列出样本队列进度与筛选列表
+                       --size 24|52|78|104
+                       --status pending|edited|accepted|all
+                       --limit 20  --offset 0  --search <id>
+
+  next                 获取下一个待标注样本 ID
+                       --size 24|52|78|104
+
+  show <id>            查看样本详情、画布色卡统计，并生成原图/预测/纠错三栏对照图
+                       --preview-file <path> (默认写入 /tmp/annot_<id>.png)
+                       --render (在终端直接输出 ANSI 彩色字符画)
+
+  palette [query]      搜索或列出 MARD 291 色板 (按色号/HEX/名称)
+
+  edit <id> [options]  对逻辑像素进行精细编辑修图，并自动更新预览图:
+                       --set "x,y:color" (支持多个坐标点)
+                       --line "x1,y1,x2,y2:color" (Bresenham 直线)
+                       --rect "x1,y1,x2,y2:color" (矩形框)
+                       --rect-fill "x1,y1,x2,y2:color" (实心矩形)
+                       --fill "x,y:color" (连通区域漫水填充)
+                       --erase "x,y" (设为透明)
+                       --replace "old_color:new_color" (全局颜色替换)
+                       --remove-bg (自动去边缘背景)
+                       --clean-fringe (单色主体彩边净化为纯黑描边并去杂色)
+
+  save <id>            提交保存纠错标注 (生成 corrected.png, edit_mask.png, meta.json)
+                       --accept (直接通过，0 处修改)
+
+  status <id> <status> 手动更改标注状态 (pending | edited | accepted)
+                       可将已保存的样本重置为 "pending" (待审核)
+
+  diff <id>            查看当前编辑与原始模型预测的所有差异点 (坐标与颜色)
+
+  reset <id>           重置画布像素回模型原始预测
+
+示例:
+  # 1. 查找下一个待标的 24 像素样本
+  node scripts/pixel_annotate.mjs next --size 24
+
+  # 2. 生成预览并在工作区查看
+  node scripts/pixel_annotate.mjs show 8_24
+
+  # 3. 进行修正修图 (去背景 + 修线 + 换色)
+  node scripts/pixel_annotate.mjs edit 8_24 --remove-bg --set 10,12:H07 10,13:H07
+
+  # 4. 保存提交标注
+  node scripts/pixel_annotate.mjs save 8_24
+
+  # 5. 如果需要改成待审核状态
+  node scripts/pixel_annotate.mjs status 8_24 pending
+`);
+      return;
+    }
+
+    if (command === 'list') {
+      const indicesDir = path.join(dataRoot, 'indices');
+      const allFiles = (await readdir(indicesDir)).filter(f => f.endsWith('.json'));
+      const allIds = allFiles.map(f => f.slice(0, -5)).sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+
+      const sizeFilter = args.size ? String(args.size) : '';
+      const statusFilter = args.status ? String(args.status) : '';
+      const search = (args.search || '').trim().toLowerCase();
+      const limit = Number(args.limit || 20);
+      const offset = Number(args.offset || 0);
+
+      const records = [];
+      let totalCompleted = 0;
+      let totalPending = 0;
+      let totalEdited = 0;
+      let totalAccepted = 0;
+
+      for (const id of allIds) {
+        const rec = JSON.parse(await readFile(path.join(indicesDir, `${id}.json`), 'utf8'));
+        const st = rec.status || 'pending';
+        if (st === 'pending') totalPending++;
+        else if (st === 'edited') { totalEdited++; totalCompleted++; }
+        else if (st === 'accepted') { totalAccepted++; totalCompleted++; }
+
+        if (sizeFilter && String(rec.width) !== sizeFilter) continue;
+        if (statusFilter && statusFilter !== 'all' && st !== statusFilter) continue;
+        if (search && !id.toLowerCase().includes(search)) continue;
+
+        records.push(rec);
+      }
+
+      console.log(`\n📊 数据集统计: 总样本: ${allIds.length} | 已完成: ${totalCompleted} (已改: ${totalEdited}, 通过: ${totalAccepted}) | 待审核: ${totalPending}`);
+      console.log(`🔍 筛选条件: 尺寸=${sizeFilter || '全部'}, 状态=${statusFilter || '全部'}, 匹配数=${records.length}\n`);
+
+      console.log('序号'.padEnd(6) + '样本 ID'.padEnd(16) + '尺寸'.padEnd(12) + '状态'.padEnd(10) + '已修改像素'.padEnd(14) + '模型版本');
+      console.log('-'.repeat(70));
+
+      const page = records.slice(offset, offset + limit);
+      page.forEach((r, idx) => {
+        const no = String(offset + idx + 1).padStart(4, '0');
+        const stLabel = r.status === 'accepted' ? '✅ 通过' : r.status === 'edited' ? '✏️ 已改' : '⏳ 待审';
+        console.log(
+          `${no}  ${r.id.padEnd(16)}${`${r.width}×${r.height}`.padEnd(12)}${stLabel.padEnd(10)}${String(r.changed_pixels || 0).padEnd(14)}${r.model_version || ''}`
+        );
+      });
+      if (records.length > offset + limit) {
+        console.log(`\n... 还有 ${records.length - offset - limit} 条样本未显示，使用 --offset ${offset + limit} 查看更多`);
+      }
+      return;
+    }
+
+    if (command === 'next') {
+      const indicesDir = path.join(dataRoot, 'indices');
+      const allFiles = (await readdir(indicesDir)).filter(f => f.endsWith('.json'));
+      const allIds = allFiles.map(f => f.slice(0, -5)).sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+      const sizeFilter = args.size ? String(args.size) : '';
+
+      for (const id of allIds) {
+        const rec = JSON.parse(await readFile(path.join(indicesDir, `${id}.json`), 'utf8'));
+        if (sizeFilter && String(rec.width) !== sizeFilter) continue;
+        if (!rec.status || rec.status === 'pending') {
+          console.log(id);
+          return;
+        }
+      }
+      console.error('没有找到符合条件的待审样本！');
+      process.exit(1);
+    }
+
+    if (command === 'palette') {
+      const query = (args._[1] || '').trim().toLowerCase();
+      const filtered = !query ? palette : palette.filter(c =>
+        c.code.toLowerCase().includes(query) || c.hex.toLowerCase().includes(query)
+      );
+      console.log(`\n🎨 MARD 色板查询 (${filtered.length} / ${palette.length}):`);
+      console.log('索引'.padEnd(8) + 'MARD 色号'.padEnd(14) + 'HEX'.padEnd(12) + 'RGB');
+      console.log('-'.repeat(45));
+      filtered.slice(0, 50).forEach(c => {
+        console.log(`#${String(c.index).padEnd(6)}${c.code.padEnd(14)}${c.hex.padEnd(12)}${c.rgb.join(', ')}`);
+      });
+      if (filtered.length > 50) console.log(`... 仅展示前 50 种颜色`);
+      return;
+    }
+
+    if (command === 'show') {
+      const id = args._[1];
+      if (!id) throw new Error('请指定样本 ID，例如: node scripts/pixel_annotate.mjs show 8_24');
+      const recFile = path.join(dataRoot, 'indices', `${id}.json`);
+      const rec = JSON.parse(await readFile(recFile, 'utf8'));
+      const pixels = rec.corrected_indices || rec.indices;
+
+      console.log(`\n🖼️ 样本 ID: ${rec.id}`);
+      console.log(`- 尺寸: ${rec.width} × ${rec.height}`);
+      console.log(`- 状态: ${rec.status || 'pending'} (已修改: ${rec.changed_pixels || 0} 格)`);
+      console.log(`- 模型版本: ${rec.model_version}`);
+
+      // Count colors
+      const counts = new Map();
+      for (const p of pixels) counts.set(p, (counts.get(p) || 0) + 1);
+      const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+
+      console.log(`\n🎨 画布用色分布 (共 ${sorted.length} 种颜色):`);
+      for (const [idx, count] of sorted.slice(0, 10)) {
+        const pct = ((count / (rec.width * rec.height)) * 100).toFixed(1);
+        console.log(`  ${colorDesc(idx).padEnd(28)} : ${count} 格 (${pct}%)`);
+      }
+      if (sorted.length > 10) console.log(`  ... 另有 ${sorted.length - 10} 种颜色`);
+
+      const previewPath = args['preview-file'] || `/tmp/annot_${id}.png`;
+      await generateSideBySidePreview(dataRoot, rec, previewPath);
+      console.log(`\n✨ 已生成三栏对照图: ${previewPath}`);
+      console.log(`   (01 原图 | 02 模型预测 | 03 纠错画布带坐标刻度)`);
+      console.log(`👉 可直接在对话中查看或使用工具检查该图片。\n`);
+      return;
+    }
+
+    if (command === 'diff') {
+      const id = args._[1];
+      if (!id) throw new Error('请指定样本 ID');
+      const recFile = path.join(dataRoot, 'indices', `${id}.json`);
+      const rec = JSON.parse(await readFile(recFile, 'utf8'));
+      const orig = rec.indices;
+      const curr = rec.corrected_indices || rec.indices;
+
+      const diffs = [];
+      for (let i = 0; i < orig.length; i++) {
+        if (orig[i] !== curr[i]) {
+          const x = i % rec.width, y = Math.floor(i / rec.width);
+          diffs.push({ x, y, from: orig[i], to: curr[i] });
+        }
+      }
+      console.log(`\n🔍 样本 ${id} 修改差异对比 (共 ${diffs.length} 处修改):`);
+      diffs.slice(0, 30).forEach(d => {
+        console.log(`  (${d.x}, ${d.y}): ${colorDesc(d.from)} -> ${colorDesc(d.to)}`);
+      });
+      if (diffs.length > 30) console.log(`  ... 另有 ${diffs.length - 30} 处修改`);
+      return;
+    }
+
+    if (command === 'reset') {
+      const id = args._[1];
+      if (!id) throw new Error('请指定样本 ID');
+      const recFile = path.join(dataRoot, 'indices', `${id}.json`);
+      const rec = JSON.parse(await readFile(recFile, 'utf8'));
+      rec.corrected_indices = [...rec.indices];
+      rec.changed_pixels = 0;
+      await atomicWrite(recFile, JSON.stringify(rec, null, 2));
+      const previewPath = `/tmp/annot_${id}.png`;
+      await generateSideBySidePreview(dataRoot, rec, previewPath);
+      console.log(`\n🔄 样本 ${id} 画布已重置回原始模型预测结果！预览图: ${previewPath}`);
+      return;
+    }
+
+    if (command === 'status') {
+      const id = args._[1];
+      const nextStatus = args._[2];
+      if (!id || !nextStatus || !['pending', 'accepted', 'edited'].includes(nextStatus)) {
+        throw new Error('用法: node scripts/pixel_annotate.mjs status <id> <pending|accepted|edited>');
+      }
+      const recFile = path.join(dataRoot, 'indices', `${id}.json`);
+      const rec = JSON.parse(await readFile(recFile, 'utf8'));
+      rec.status = nextStatus;
+
+      const metaFile = path.join(dataRoot, 'meta', `${id}.json`);
+      if (nextStatus === 'pending') {
+        try { await unlink(metaFile); } catch {}
+      } else {
+        let meta;
+        try {
+          meta = JSON.parse(await readFile(metaFile, 'utf8'));
+          meta.accepted_without_edit = nextStatus === 'accepted';
+        } catch {
+          meta = {
+            id,
+            source: `sources/${id}.png`,
+            prediction: `predictions/${id}.png`,
+            corrected: `corrected/${id}.png`,
+            edit_mask: `edit_masks/${id}.png`,
+            width: rec.width,
+            height: rec.height,
+            model_version: rec.model_version,
+            palette: 'MARD',
+            accepted_without_edit: nextStatus === 'accepted',
+            changed_pixels: rec.changed_pixels || 0,
+            timestamp: new Date().toISOString()
+          };
+        }
+        await atomicWrite(metaFile, JSON.stringify(meta, null, 2));
+      }
+
+      await atomicWrite(recFile, JSON.stringify(rec, null, 2));
+      console.log(`\n✅ 样本 ${id} 状态已修改为: ${nextStatus}`);
+      return;
+    }
+
+    if (command === 'edit') {
+      const id = args._[1];
+      if (!id) throw new Error('请指定样本 ID');
+      const recFile = path.join(dataRoot, 'indices', `${id}.json`);
+      const rec = JSON.parse(await readFile(recFile, 'utf8'));
+      const width = rec.width, height = rec.height;
+      let pixels = [...(rec.corrected_indices || rec.indices)];
+      const opsApplied = [];
+
+      // Auto background removal
+      if (args['remove-bg']) {
+        const res = removeBackground(pixels, width, height);
+        if (res) {
+          pixels = res.pixels;
+          opsApplied.push(`一键去背景 (去除 ${res.clearedCount} 个像素)`);
+        }
+      }
+
+      // Fringe cleanup
+      if (args['clean-fringe']) {
+        const res = cleanColorFringe(pixels, width, height);
+        if (res) {
+          pixels = res.pixels;
+          opsApplied.push(`净化彩边 (纯黑描边 ${res.outlinePixels} 格，清理杂色 ${res.clearedPixels} 格)`);
+        }
+      }
+
+      // Replace color
+      if (args.replace) {
+        const [fromStr, toStr] = String(args.replace).split(':');
+        const fromColor = resolveColor(fromStr);
+        const toColor = resolveColor(toStr);
+        let count = 0;
+        pixels = pixels.map(p => {
+          if (p === fromColor) { count++; return toColor; }
+          return p;
+        });
+        opsApplied.push(`替换颜色: ${colorDesc(fromColor)} -> ${colorDesc(toColor)} (共 ${count} 格)`);
+      }
+
+      // Set individual pixels: --set 5,10:H07 6,10:T01 ...
+      if (args.set) {
+        const items = Array.isArray(args.set) ? args.set : [args.set];
+        let count = 0;
+        for (const item of items) {
+          const parts = String(item).split(' ');
+          for (const p of parts) {
+            if (!p.includes(':')) continue;
+            const [coord, cStr] = p.split(':');
+            const [x, y] = coord.split(',').map(Number);
+            if (x >= 0 && x < width && y >= 0 && y < height) {
+              pixels[y * width + x] = resolveColor(cStr);
+              count++;
+            }
+          }
+        }
+        opsApplied.push(`设置像素点: ${count} 处`);
+      }
+
+      // Erase pixels: --erase 5,10 6,10 ...
+      if (args.erase) {
+        const items = Array.isArray(args.erase) ? args.erase : [args.erase];
+        let count = 0;
+        for (const item of items) {
+          const coords = String(item).split(' ');
+          for (const c of coords) {
+            const [x, y] = c.split(',').map(Number);
+            if (x >= 0 && x < width && y >= 0 && y < height) {
+              pixels[y * width + x] = -1;
+              count++;
+            }
+          }
+        }
+        opsApplied.push(`擦除为透明: ${count} 处`);
+      }
+
+      // Draw line: --line x0,y0,x1,y1:color
+      if (args.line) {
+        const [coords, cStr] = String(args.line).split(':');
+        const [x0, y0, x1, y1] = coords.split(',').map(Number);
+        const col = resolveColor(cStr);
+        pixels = drawLine(pixels, width, height, x0, y0, x1, y1, col);
+        opsApplied.push(`绘制直线 (${x0},${y0}) -> (${x1},${y1}) 颜色: ${colorDesc(col)}`);
+      }
+
+      // Draw rect: --rect x0,y0,x1,y1:color
+      if (args.rect) {
+        const [coords, cStr] = String(args.rect).split(':');
+        const [x0, y0, x1, y1] = coords.split(',').map(Number);
+        const col = resolveColor(cStr);
+        pixels = drawRect(pixels, width, height, x0, y0, x1, y1, col, false);
+        opsApplied.push(`绘制矩形框 (${x0},${y0}) 到 (${x1},${y1}) 颜色: ${colorDesc(col)}`);
+      }
+
+      // Draw filled rect: --rect-fill x0,y0,x1,y1:color
+      if (args['rect-fill']) {
+        const [coords, cStr] = String(args['rect-fill']).split(':');
+        const [x0, y0, x1, y1] = coords.split(',').map(Number);
+        const col = resolveColor(cStr);
+        pixels = drawRect(pixels, width, height, x0, y0, x1, y1, col, true);
+        opsApplied.push(`填充矩形 (${x0},${y0}) 到 (${x1},${y1}) 颜色: ${colorDesc(col)}`);
+      }
+
+      // Flood fill: --fill x,y:color
+      if (args.fill) {
+        const [coord, cStr] = String(args.fill).split(':');
+        const [x, y] = coord.split(',').map(Number);
+        const col = resolveColor(cStr);
+        pixels = floodFill(pixels, width, height, x, y, col);
+        opsApplied.push(`区域油漆桶填充 (${x},${y}) 颜色: ${colorDesc(col)}`);
+      }
+
+      // Compute changes
+      const changed = pixels.reduce((acc, val, i) => acc + Number(val !== rec.indices[i]), 0);
+      rec.corrected_indices = pixels;
+      rec.changed_pixels = changed;
+      await atomicWrite(recFile, JSON.stringify(rec, null, 2));
+
+      const previewPath = `/tmp/annot_${id}.png`;
+      await generateSideBySidePreview(dataRoot, rec, previewPath);
+
+      console.log(`\n🎨 样本 ${id} 编辑完成:`);
+      opsApplied.forEach(op => console.log(`  ✓ ${op}`));
+      console.log(`\n📊 距模型预测累计修改像素: ${changed} 格`);
+      console.log(`🖼️ 更新后预览图: ${previewPath}`);
+      return;
+    }
+
+    if (command === 'save') {
+      const id = args._[1];
+      if (!id) throw new Error('请指定样本 ID');
+      const accept = Boolean(args.accept);
+      const recFile = path.join(dataRoot, 'indices', `${id}.json`);
+      const rec = JSON.parse(await readFile(recFile, 'utf8'));
+
+      const edited = accept ? [...rec.indices] : (rec.corrected_indices || [...rec.indices]);
+      const changed = edited.reduce((acc, val, i) => acc + Number(val !== rec.indices[i]), 0);
+      if (accept && changed > 0) {
+        console.log(`⚠️ --accept 模式会舍弃已进行的 ${changed} 处修改，以原始预测通过。`);
+      }
+
+      // Render corrected PNG
+      const correctedPng = new PNG({ width: rec.width, height: rec.height });
+      const maskPng = new PNG({ width: rec.width, height: rec.height });
+
+      for (let i = 0; i < edited.length; i++) {
+        const p = i * 4;
+        const colorIdx = edited[i];
+        if (colorIdx < 0) {
+          correctedPng.data[p] = 0; correctedPng.data[p + 1] = 0; correctedPng.data[p + 2] = 0; correctedPng.data[p + 3] = 0;
+        } else {
+          const rgb = palette[colorIdx].rgb;
+          correctedPng.data[p] = rgb[0]; correctedPng.data[p + 1] = rgb[1]; correctedPng.data[p + 2] = rgb[2]; correctedPng.data[p + 3] = 255;
+        }
+
+        const isChanged = (edited[i] !== rec.indices[i]);
+        maskPng.data[p] = isChanged ? 255 : 0;
+        maskPng.data[p + 1] = isChanged ? 255 : 0;
+        maskPng.data[p + 2] = isChanged ? 255 : 0;
+        maskPng.data[p + 3] = 255;
+      }
+
+      await atomicWrite(path.join(dataRoot, 'corrected', `${id}.png`), PNG.sync.write(correctedPng));
+      await atomicWrite(path.join(dataRoot, 'edit_masks', `${id}.png`), PNG.sync.write(maskPng));
+
+      const meta = {
+        id,
+        source: `sources/${id}.png`,
+        prediction: `predictions/${id}.png`,
+        corrected: `corrected/${id}.png`,
+        edit_mask: `edit_masks/${id}.png`,
+        width: rec.width,
+        height: rec.height,
+        model_version: rec.model_version,
+        palette: 'MARD',
+        accepted_without_edit: accept,
+        changed_pixels: accept ? 0 : changed,
+        timestamp: new Date().toISOString()
+      };
+
+      await atomicWrite(path.join(dataRoot, 'meta', `${id}.json`), JSON.stringify(meta, null, 2));
+
+      rec.status = accept ? 'accepted' : 'edited';
+      rec.changed_pixels = accept ? 0 : changed;
+      rec.corrected_indices = edited;
+      await atomicWrite(recFile, JSON.stringify(rec, null, 2));
+
+      const previewPath = `/tmp/annot_${id}.png`;
+      await generateSideBySidePreview(dataRoot, rec, previewPath);
+
+      console.log(`\n💾 样本 ${id} 保存成功!`);
+      console.log(`- 状态: ${rec.status}`);
+      console.log(`- 修改像素: ${rec.changed_pixels} 格`);
+      console.log(`- 生成纠错图: webui/data/corrected/${id}.png`);
+      console.log(`- 生成编辑 Mask: webui/data/edit_masks/${id}.png`);
+      console.log(`- 生成元数据: webui/data/meta/${id}.json`);
+      console.log(`- 预览图: ${previewPath}\n`);
+      return;
+    }
+
+    throw new Error(`未知命令: "${command}"。输入 node scripts/pixel_annotate.mjs help 查看使用说明。`);
+  } catch (err) {
+    console.error(`\n❌ 错误: ${err.message || err}\n`);
+    process.exit(1);
+  }
+}
+
+main();

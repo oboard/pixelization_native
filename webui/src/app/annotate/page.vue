@@ -464,6 +464,28 @@ async function nextSample(force = false) {
     if (listElement.value) listElement.value.scrollTop = index * ROW_HEIGHT;
   }
 }
+async function updateStatus(nextStatus: 'pending' | 'accepted' | 'edited') {
+  if (!sample.value || busy.value || sample.value.status === nextStatus) return;
+  busy.value = true; error.value = ''; notice.value = '';
+  try {
+    const id = sample.value.id;
+    await request<{ success: boolean; status: string }>(`/api/annotation/samples/${encodeURIComponent(id)}/status`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: nextStatus }),
+    });
+    if (sample.value?.id === id) {
+      sample.value.status = nextStatus;
+    }
+    await refreshSamples();
+    const label = nextStatus === 'pending' ? '待审核' : nextStatus === 'accepted' ? '已通过' : '已改';
+    notice.value = `${id} 状态已更新为「${label}」`;
+  } catch (cause) {
+    error.value = message(cause);
+  } finally {
+    busy.value = false;
+  }
+}
+
 async function saveAndNext() { if (busy.value || !sample.value) return; if (await save()) await nextSample(true); }
 async function acceptAndNext() { if (busy.value || !sample.value) return; if (await save(true)) await nextSample(true); }
 
@@ -572,7 +594,7 @@ onUnmounted(() => { window.removeEventListener('keydown', keydown); window.remov
       </aside>
 
       <main v-if="sample" class="main-area">
-        <div class="work-heading"><div><span class="eyebrow">ANNOTATION / {{ sample.id }}</span><h1>审阅与纠错</h1><p>按逻辑像素修正模型结果。保存时自动生成修正图与编辑 mask。</p></div><div class="heading-meta"><span>{{ sample.width }} × {{ sample.height }}</span><span>{{ sample.model_version }}</span></div></div>
+        <div class="work-heading"><div><span class="eyebrow">ANNOTATION / {{ sample.id }}</span><h1>审阅与纠错</h1><p>按逻辑像素修正模型结果。保存时自动生成修正图与编辑 mask。</p></div><div class="heading-meta"><span>{{ sample.width }} × {{ sample.height }}</span><span>{{ sample.model_version }}</span><label class="status-select-wrap" :class="sample.status" title="切换样本审阅状态"><span class="status-indicator"></span><select :value="sample.status" :disabled="busy" @change="updateStatus(($event.target as HTMLSelectElement).value as any)"><option value="pending">待审核</option><option value="edited">已改</option><option value="accepted">通过</option></select></label></div></div>
         <div class="boards">
           <section class="board source-board"><div class="board-title"><div><span class="section-number">01</span><h2>原图</h2></div><span>参考图像</span></div><div class="source-stage"><img :src="imageUrl(sample.id, 'sources')" alt="原图"></div><div class="board-caption">观察主体、轮廓与关键细节</div></section>
           <section class="board editor-board"><div class="board-title"><div><span class="section-number">02</span><h2>模型输出 · 可编辑</h2></div><span class="modified">{{ changedPixels }} 像素已修改</span></div>
@@ -607,6 +629,14 @@ onUnmounted(() => { window.removeEventListener('keydown', keydown); window.remov
 .transparent{width:100%;margin-top:13px;padding:9px 12px;background:#fff;border:1px solid var(--line);border-radius:7px;color:#526560;font-size:11px;text-align:left;display:flex;align-items:center;gap:8px}
 .transparent:hover{border-color:#b4c7c1;background:#f9fbfb;color:#20403a}
 .checker-icon{width:16px;height:16px;flex:none;border:1px solid #0002;border-radius:3px;display:block}
+
+.status-select-wrap{display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid #dde7e2;border-radius:6px;padding:2px 8px 2px 9px;font-size:11px;font-weight:650;color:#3d5650;cursor:pointer;position:relative;transition:border-color .15s,background .15s}
+.status-select-wrap:hover{border-color:#9cbdb3}
+.status-select-wrap select{border:0;background:transparent;color:inherit;font-weight:inherit;font-size:11px;cursor:pointer;outline:none;padding:3px 0}
+.status-indicator{display:inline-block;width:7px;height:7px;border-radius:50%;flex:none;background:#9aa9a6}
+.status-select-wrap.pending .status-indicator{background:#eab308}
+.status-select-wrap.accepted .status-indicator{background:#2b9b74}
+.status-select-wrap.edited .status-indicator{background:#e96f43}
 </style>
 <style scoped>
 @media(max-width:650px){.boards{height:auto}.board{min-height:0}.source-stage{min-height:230px}.canvas-viewport{min-height:380px}.source-board{height:330px}.editor-board{height:490px}}
