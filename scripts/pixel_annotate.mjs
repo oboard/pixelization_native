@@ -748,6 +748,96 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       return;
     }
 
+        if (command === 'batch-clean') {
+      const indicesDir = path.join(dataRoot, 'indices');
+      const allFiles = (await readdir(indicesDir)).filter(f => f.endsWith('.json'));
+      const allIds = allFiles.map(f => f.slice(0, -5)).sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+
+      const sizeFilter = args.size ? String(args.size) : '';
+      const limit = Number(args.limit || 50);
+      const doRemoveBg = args['remove-bg'] !== false;
+      const doCleanFringe = Boolean(args['clean-fringe']);
+      const doSave = args.save !== false;
+
+      let processed = 0;
+      console.log(`\n🚀 批量预标注/清洗开始 (上限 ${limit} 条, 尺寸=${sizeFilter || "全部"})...`);
+
+      for (const id of allIds) {
+        if (processed >= limit) break;
+        const recFile = path.join(indicesDir, `${id}.json`);
+        const rec = JSON.parse(await readFile(recFile, 'utf8'));
+        if (sizeFilter && String(rec.width) !== sizeFilter) continue;
+        if (rec.status && rec.status !== 'pending') continue;
+
+        let pixels = [...(rec.corrected_indices || rec.indices)];
+        let changed = false;
+
+        if (doRemoveBg) {
+          const res = removeBackground(pixels, rec.width, rec.height);
+          if (res && res.clearedCount > 0) {
+            pixels = res.pixels;
+            changed = true;
+          }
+        }
+
+        if (doCleanFringe) {
+          const res = cleanColorFringe(pixels, rec.width, rec.height);
+          if (res && (res.outlinePixels > 0 || res.clearedPixels > 0)) {
+            pixels = res.pixels;
+            changed = true;
+          }
+        }
+
+        if (changed && doSave) {
+          const diffCount = pixels.reduce((acc, val, i) => acc + Number(val !== rec.indices[i]), 0);
+          const correctedPng = new PNG({ width: rec.width, height: rec.height });
+          const maskPng = new PNG({ width: rec.width, height: rec.height });
+          for (let i = 0; i < pixels.length; i++) {
+            const p = i * 4;
+            const colorIdx = pixels[i];
+            if (colorIdx < 0) {
+              correctedPng.data[p] = correctedPng.data[p + 1] = correctedPng.data[p + 2] = correctedPng.data[p + 3] = 0;
+            } else {
+              const rgb = palette[colorIdx].rgb;
+              correctedPng.data[p] = rgb[0]; correctedPng.data[p + 1] = rgb[1]; correctedPng.data[p + 2] = rgb[2]; correctedPng.data[p + 3] = 255;
+            }
+            const isDiff = (pixels[i] !== rec.indices[i]);
+            maskPng.data[p] = maskPng.data[p + 1] = maskPng.data[p + 2] = isDiff ? 255 : 0;
+            maskPng.data[p + 3] = 255;
+          }
+          await atomicWrite(path.join(dataRoot, 'corrected', `${id}.png`), PNG.sync.write(correctedPng));
+          await atomicWrite(path.join(dataRoot, 'edit_masks', `${id}.png`), PNG.sync.write(maskPng));
+
+          const meta = {
+            id,
+            source: `sources/${id}.png`,
+            prediction: `predictions/${id}.png`,
+            corrected: `corrected/${id}.png`,
+            edit_mask: `edit_masks/${id}.png`,
+            width: rec.width,
+            height: rec.height,
+            model_version: rec.model_version,
+            palette: 'MARD',
+            accepted_without_edit: false,
+            changed_pixels: diffCount,
+            timestamp: new Date().toISOString()
+          };
+          await atomicWrite(path.join(dataRoot, 'meta', `${id}.json`), JSON.stringify(meta, null, 2));
+
+          rec.status = 'edited';
+          rec.changed_pixels = diffCount;
+          rec.corrected_indices = pixels;
+          await atomicWrite(recFile, JSON.stringify(rec, null, 2));
+
+          processed++;
+          console.log(`  [${processed}/${limit}] ${id} (${rec.width}×${rec.height}) -> 已处理并保存 (${diffCount} 像素)`);
+        }
+      }
+
+      console.log(`\n✨ 批量预处理完成! 共处理并保存 ${processed} 条样本。\n`);
+      return;
+    }
+
     if (command === 'edit') {
       const id = args._[1];
       if (!id) throw new Error('请指定样本 ID');
