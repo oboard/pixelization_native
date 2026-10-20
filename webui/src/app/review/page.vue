@@ -16,6 +16,7 @@ const busy = ref(false);
 const error = ref('');
 const notice = ref('');
 const rejectionReason = ref('');
+const editorBackground = ref<'light' | 'dark'>('light');
 const imageUrl = (id: string, kind: string) => `/api/annotation/samples/${encodeURIComponent(id)}/image?kind=${kind}`;
 const pageNumber = computed(() => Math.floor(offset.value / limit) + 1);
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / limit)));
@@ -74,13 +75,17 @@ async function turnPage(delta: number) {
   await load();
 }
 
-onMounted(() => { void load(); });
+onMounted(() => {
+  if (localStorage.getItem('annotationEditorBackground') === 'dark') editorBackground.value = 'dark';
+  void load();
+});
+watch(editorBackground, value => localStorage.setItem('annotationEditorBackground', value));
 watch(selected, () => { rejectionReason.value = ''; });
 </script>
 
 <template>
   <div class="review-page">
-    <header class="header"><div><span class="eyebrow">FINAL REVIEW</span><h1>最终审核</h1><p>逐张对照原图与纠错结果，确认是否可进入训练集。</p></div><a href="/annotate">返回标注工作台</a></header>
+    <header class="header"><div><span class="eyebrow">FINAL REVIEW</span><h1>最终审核</h1><p>逐张对照原图与纠错结果，确认是否可进入训练集。</p></div><div class="header-actions"><div class="background-switch" role="group" aria-label="审核背景"><span>背景</span><button type="button" :class="{ active: editorBackground === 'light' }" :aria-pressed="editorBackground === 'light'" @click="editorBackground = 'light'">浅色</button><button type="button" :class="{ active: editorBackground === 'dark' }" :aria-pressed="editorBackground === 'dark'" @click="editorBackground = 'dark'">深色</button></div><a href="/annotate">返回标注工作台</a></div></header>
     <div v-if="error" class="message error" role="alert">{{ error }}</div>
     <div v-if="notice" class="message notice" role="status">{{ notice }}</div>
     <div class="layout">
@@ -90,7 +95,7 @@ watch(selected, () => { rejectionReason.value = ''; });
         <div class="pager"><button :disabled="offset === 0" @click="turnPage(-1)">上一页</button><span>{{ pageNumber }} / {{ pageCount }}</span><button :disabled="pageNumber >= pageCount" @click="turnPage(1)">下一页</button></div>
       </aside>
       <main v-if="selected" class="detail"><div class="detail-head"><div><span class="eyebrow">{{ mode === 'history' ? 'HISTORY' : 'REVIEW' }} / {{ selected.id }}</span><h2>{{ selected.id }} <small class="detail-status" :class="selected.status">{{ statusLabel(selected.status) }}</small></h2></div><span>{{ selected.width }} × {{ selected.height }} · 修改 {{ selected.changed_pixels }} 像素</span></div>
-        <div class="comparison"><section><h3>原图</h3><div class="stage"><img :src="imageUrl(selected.id, 'sources')" alt="原图"></div></section><section><h3>纠错结果</h3><div class="stage"><img class="pixel" :src="imageUrl(selected.id, 'corrected')" alt="纠错后的像素图"></div></section></div>
+        <div class="comparison"><section><h3>原图</h3><div class="stage" :class="{ 'dark-background': editorBackground === 'dark' }"><img :src="imageUrl(selected.id, 'sources')" alt="原图"></div></section><section><h3>纠错结果</h3><div class="stage" :class="{ 'dark-background': editorBackground === 'dark' }"><img class="pixel" :src="imageUrl(selected.id, 'corrected')" alt="纠错后的像素图"></div></section></div>
         <div v-if="mode === 'history'" class="history-panel"><h3>审核记录</h3><ol><li v-for="(event, index) in [...(selected.review_history || [])].reverse()" :key="index"><span class="history-time">{{ formatTime(event.timestamp) }}</span><strong>{{ statusLabel(event.from) }} → {{ statusLabel(event.to) }}</strong><span v-if="event.reason" class="history-reason">原因：{{ event.reason }}</span></li></ol></div>
         <div class="actions"><a :href="`/annotate?q=${encodeURIComponent(selected.id)}`">去编辑这张</a><div class="review-controls"><button v-if="mode === 'history' && (selected.status === 'qualified' || selected.status === 'unqualified')" class="withdraw" :disabled="busy" @click="decide('pending')">撤回到待审核</button><input v-model="rejectionReason" type="text" maxlength="500" aria-label="不合格原因" placeholder="填写不合格原因" @keydown.enter="decide('unqualified')"><button class="reject" :disabled="busy || selected.status === 'unqualified'" @click="decide('unqualified')">{{ mode === 'history' ? '改为不合格' : '不合格' }}</button><button class="approve" :disabled="busy || selected.status === 'qualified'" @click="decide('qualified')">{{ mode === 'history' ? '改为合格' : '合格' }}</button></div></div>
       </main><main v-else class="detail empty-detail">{{ mode === 'history' ? '当前筛选没有审核历史。' : '当前筛选没有待审核图片。' }}</main>
@@ -103,4 +108,13 @@ watch(selected, () => { rejectionReason.value = ''; });
 .review-controls input{min-width:150px;width:230px;max-width:32vw;border:1px solid #d8e4dd;background:#fff;border-radius:8px;padding:10px 12px;font-size:12px;outline:none}.review-controls input:focus{border-color:#c16b5a;box-shadow:0 0 0 2px #c16b5a22}@media(max-width:850px){.actions{align-items:stretch;flex-direction:column;gap:12px}.review-controls{flex-wrap:wrap}.review-controls input{max-width:none;flex:1}}
 .queue-tabs{display:flex;gap:4px;padding:0 12px 10px;border-bottom:1px solid #e4ebe7}.queue-tabs button{flex:1;border:1px solid #dde8e1;border-radius:7px;background:#f7faf8;color:#5d7469;font-size:11px;font-weight:700;padding:8px 4px}.queue-tabs button.active{background:#e8f3ed;border-color:#87b7a1;color:#235f4c}.detail-status{font-size:11px;font-weight:700;padding:4px 8px;border-radius:5px;vertical-align:middle;background:#eef1ef;color:#6a8076}.detail-status.qualified{background:#e2f4e8;color:#25734e}.detail-status.unqualified{background:#fff0ea;color:#ad4f3d}.history-panel{margin-top:18px;background:#fff;border:1px solid #dfe8e3;border-radius:10px;padding:15px 18px}.history-panel h3{margin:0 0 10px;font-size:13px}.history-panel ol{list-style:none;margin:0;padding:0;display:grid;gap:7px;max-height:180px;overflow:auto}.history-panel li{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:12px;color:#445f52}.history-time{color:#889b90;font-variant-numeric:tabular-nums}.history-reason{color:#9c5341}.review-controls{min-width:0}.review-controls input{min-width:100px}.review-controls button{white-space:nowrap}@media(max-width:1000px){.actions{align-items:stretch;flex-direction:column;gap:12px}.review-controls{flex-wrap:wrap}.review-controls input{max-width:none;flex:1}}
 .actions button.withdraw{background:#f1f4f2;color:#48675a;border:1px solid #d4e0d9}
+.header-actions{display:flex;align-items:center;gap:20px}
+.background-switch{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font-size:12px;color:#70877d}
+.background-switch>span{margin-right:3px}
+.background-switch button{border:1px solid #d5dfda;border-radius:6px;background:#f7f9f8;color:#536862;padding:6px 9px;font-size:11px;cursor:pointer}
+.background-switch button.active{border-color:#2a635b;background:#e6f2ec;color:#20554c;font-weight:700}
+.background-switch button:focus-visible{outline:2px solid #e96f43;outline-offset:2px}
+.stage.dark-background{background-color:#343c40;background-image:linear-gradient(45deg,#485257 25%,transparent 25%),linear-gradient(-45deg,#485257 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#485257 75%),linear-gradient(-45deg,transparent 75%,#485257 75%)}
+@media(min-width:851px){.layout{height:calc(100vh - 106px);min-height:0;overflow:hidden}.queue-list{min-height:0;overflow-y:auto}.detail{min-height:0;overflow-y:auto}}
+@media(max-width:650px){.header{height:auto;min-height:106px;gap:12px;flex-wrap:wrap}.header-actions{gap:12px;flex-wrap:wrap}}
 </style>
