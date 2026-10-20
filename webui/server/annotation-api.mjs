@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
@@ -9,6 +9,21 @@ const mapping = JSON.parse(await readFile(path.join(root, 'src/app/colorSystemMa
 const palette = Object.entries(mapping).map(([hex, names]) => ({ hex, code: names.MARD }));
 const safeId = /^[a-zA-Z0-9_-]{1,80}$/;
 const folders = ['sources', 'predictions', 'corrected', 'edit_masks', 'meta', 'indices'];
+const statuses = new Set(['unmodified', 'pending', 'human_edited', 'qualified', 'unqualified']);
+const reviewable = new Set(['pending', 'human_edited']);
+const reviewed = new Set(['qualified', 'unqualified']);
+function sampleStatus(record) {
+  if (statuses.has(record.status)) return record.status;
+  if (record.status === 'accepted') return 'qualified';
+  if (record.status === 'edited') return record.annotation_source === 'human' ? 'human_edited' : 'pending';
+  return record.corrected_indices ? 'pending' : 'unmodified';
+}
+function reviewHistory(record) {
+  if (Array.isArray(record.review_history) && record.review_history.length) return record.review_history;
+  const status = sampleStatus(record);
+  return reviewed.has(status) ? [{ from: null, to: status,
+    reason: record.review_reason || '', timestamp: record.reviewed_at || null }] : [];
+}
 
 function json(res, status, value) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -102,6 +117,30 @@ export async function annotationApi(req, res) {
     await ensureFolders();
     const segments = url.pathname.split('/').filter(Boolean);
     if (segments[2] === 'palette' && req.method === 'GET') return json(res, 200, palette) || true;
+    if (segments[2] === 'review' && (segments.length === 3 || segments[3] === 'history') && req.method === 'GET') {
+      const historyMode = segments[3] === 'history';
+      const size = url.searchParams.get('size') || '';
+      if (size && !['24', '52', '78', '104'].includes(size)) throw new Error('无效的尺寸筛选');
+      const names = (await readdir(path.join(dataRoot, 'corrected'))).filter(name => name.endsWith('.png'));
+      const records = await Promise.all(names.map(async name => {
+        const id = name.slice(0, -4);
+        if (!safeId.test(id)) return null;
+        const record = JSON.parse(await readFile(path.join(dataRoot, 'indices', `${id}.json`), 'utf8'));
+        const status = sampleStatus(record);
+        const history = reviewHistory(record);
+        if (!(historyMode ? history.length > 0 : reviewable.has(status)) || !record.corrected_indices || (size && record.width !== Number(size))) return null;
+        return { id, width: record.width, height: record.height, model_version: record.model_version,
+          status, changed_pixels: record.changed_pixels || 0,
+          reviewed_at: record.reviewed_at || null, review_reason: record.review_reason || '',
+          review_history: historyMode ? history : undefined };
+      }));
+      const items = records.filter(Boolean).sort((a, b) => historyMode
+        ? (b.reviewed_at || '').localeCompare(a.reviewed_at || '') || a.id.localeCompare(b.id, 'en', { numeric: true })
+        : a.id.localeCompare(b.id, 'en', { numeric: true }));
+      const offset = Math.max(0, Number.parseInt(url.searchParams.get('offset') || '0', 10) || 0);
+      const limit = Math.max(1, Math.min(100, Number.parseInt(url.searchParams.get('limit') || '40', 10) || 40));
+      json(res, 200, { items: items.slice(offset, offset + limit), total: items.length, offset, limit }); return true;
+    }
     if (segments[2] === 'samples' && segments.length === 3 && req.method === 'GET') {
       const allIds = (await readdir(path.join(dataRoot, 'indices')))
         .filter(name => name.endsWith('.json')).map(name => name.slice(0, -5))
@@ -111,21 +150,36 @@ export async function annotationApi(req, res) {
       if (size && !['24', '52', '78', '104'].includes(size)) throw new Error('无效的尺寸筛选');
       const namedSize = /^\d+_(24|52|78|104)$/;
       const matchingIds = query ? allIds.filter(id => id.toLowerCase().includes(query)) : allIds;
-      const ids = !size ? matchingIds : (await Promise.all(matchingIds.map(async id => {
+      const filteredIds = !size ? matchingIds : (await Promise.all(matchingIds.map(async id => {
         const match = id.match(namedSize);
         if (match) return match[1] === size ? id : null;
         const record = JSON.parse(await readFile(path.join(dataRoot, 'indices', `${id}.json`), 'utf8'));
         return record.width === Number(size) && record.height === Number(size) ? id : null;
       }))).filter(Boolean);
+      // A rejected sample must be visible before untouched work, even when
+      // it would otherwise be buried on a later page of the virtual list.
+      const correctedNames = (await readdir(path.join(dataRoot, 'corrected')))
+        .filter(name => name.endsWith('.png'));
+      const rejectedIds = new Set((await Promise.all(correctedNames.map(async name => {
+        const id = name.slice(0, -4);
+        const record = JSON.parse(await readFile(path.join(dataRoot, 'indices', `${id}.json`), 'utf8'));
+        return sampleStatus(record) === 'unqualified' ? id : null;
+      }))).filter(Boolean));
+      const ids = [...filteredIds.filter(id => rejectedIds.has(id)),
+        ...filteredIds.filter(id => !rejectedIds.has(id))];
       const offset = Math.max(0, Number.parseInt(url.searchParams.get('offset') || '0', 10) || 0);
       const limit = Math.max(1, Math.min(200, Number.parseInt(url.searchParams.get('limit') || '100', 10) || 100));
       const pageIds = ids.slice(offset, offset + limit);
       const samples = await Promise.all(pageIds.map(async id => {
         const record = JSON.parse(await readFile(path.join(dataRoot, 'indices', `${id}.json`), 'utf8'));
         return { id, width: record.width, height: record.height, model_version: record.model_version,
-          status: record.status || 'pending', changed_pixels: record.changed_pixels || 0 };
+          status: sampleStatus(record), changed_pixels: record.changed_pixels || 0 };
       }));
-      const completed = (await readdir(path.join(dataRoot, 'meta'))).filter(name => name.endsWith('.json')).length;
+      const completed = (await Promise.all((await readdir(path.join(dataRoot, 'meta')))
+        .filter(name => name.endsWith('.json')).map(async name => {
+          const record = JSON.parse(await readFile(path.join(dataRoot, 'indices', name), 'utf8'));
+          return sampleStatus(record) === 'qualified';
+        }))).filter(Boolean).length;
       json(res, 200, { items: samples, total: ids.length, all_total: allIds.length, completed, offset, limit }); return true;
     }
     if (segments[2] === 'samples' && segments.length === 3 && req.method === 'POST') {
@@ -141,7 +195,7 @@ export async function annotationApi(req, res) {
       try { await readFile(recordFile); json(res, 409, { error: '样本 ID 已存在' }); return true; } catch (error) { if (error.code !== 'ENOENT') throw error; }
       const record = { id, width: prediction.width, height: prediction.height,
         model_version: String(input.model_version || 'unknown').slice(0, 100),
-        indices: indicesFromPng(prediction), status: 'pending', changed_pixels: 0 };
+        indices: indicesFromPng(prediction), status: 'unmodified', changed_pixels: 0 };
       await atomicWrite(path.join(dataRoot, 'sources', `${id}.png`), sourceBuffer);
       await atomicWrite(path.join(dataRoot, 'predictions', `${id}.png`), PNG.sync.write(prediction));
       await atomicWrite(recordFile, JSON.stringify(record, null, 2));
@@ -156,28 +210,69 @@ export async function annotationApi(req, res) {
     }
     if (segments[2] === 'samples' && safeId.test(id || '') && segments.length === 4 && req.method === 'GET') {
       const record = JSON.parse(await readFile(path.join(dataRoot, 'indices', `${id}.json`), 'utf8'));
-      json(res, 200, { ...record, paths: samplePaths(id) }); return true;
+      json(res, 200, { ...record, status: sampleStatus(record), paths: samplePaths(id) }); return true;
+    }
+    if (segments[2] === 'samples' && safeId.test(id || '') && segments[4] === 'review' && req.method === 'POST') {
+      const input = await body(req);
+      if (!['qualified', 'unqualified', 'pending'].includes(input.status)) throw new Error('无效的审核结果');
+      const reason = String(input.reason || '').trim().slice(0, 500);
+      if (input.status === 'unqualified' && !reason) throw new Error('请填写不合格原因');
+      const file = path.join(dataRoot, 'indices', `${id}.json`);
+      const record = JSON.parse(await readFile(file, 'utf8'));
+      const previous = sampleStatus(record);
+      if (!(reviewable.has(previous) || reviewed.has(previous)) || !record.corrected_indices) throw new Error('这张图当前不可审核');
+      if (input.status === 'pending' && !reviewed.has(previous)) throw new Error('只有已审核图片可以撤回');
+      if (input.expected_status && input.expected_status !== previous) {
+        const conflict = new Error('样本状态已被其他操作修改，请刷新后重试');
+        conflict.status = 409;
+        throw conflict;
+      }
+      if (previous === input.status) throw new Error('审核结果没有变化');
+      const history = reviewHistory(record);
+      record.status = input.status;
+      record.reviewed_at = new Date().toISOString();
+      record.review_history = [...history, { from: previous, to: input.status,
+        reason: input.status === 'unqualified' ? reason : input.status === 'pending' ? '撤回审核' : '', timestamp: record.reviewed_at }];
+      if (input.status === 'unqualified') record.review_reason = reason;
+      else delete record.review_reason;
+      await atomicWrite(file, JSON.stringify(record, null, 2));
+      const metaFile = path.join(dataRoot, 'meta', `${id}.json`);
+      let meta;
+      try { meta = JSON.parse(await readFile(metaFile, 'utf8')); }
+      catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        meta = { id, ...samplePaths(id), width: record.width, height: record.height,
+          model_version: record.model_version, palette: 'MARD', accepted_without_edit: false,
+          changed_pixels: record.changed_pixels || 0, timestamp: new Date().toISOString() };
+      }
+      meta.review_status = input.status;
+      meta.reviewed_at = record.reviewed_at;
+      meta.review_history = record.review_history;
+      if (input.status === 'unqualified') meta.review_reason = reason;
+      else delete meta.review_reason;
+      await atomicWrite(metaFile, JSON.stringify(meta, null, 2));
+      json(res, 200, { id, status: input.status }); return true;
     }
     if (segments[2] === 'samples' && safeId.test(id || '') && segments[4] === 'status' && req.method === 'POST') {
       const input = await body(req);
       const nextStatus = input.status;
-      if (!['pending', 'accepted', 'edited'].includes(nextStatus)) throw new Error('无效的状态值');
+      if (!['pending', 'human_edited'].includes(nextStatus)) throw new Error('请通过最终审核页面设置审核结果');
       const file = path.join(dataRoot, 'indices', `${id}.json`);
       const record = JSON.parse(await readFile(file, 'utf8'));
+      if (!record.corrected_indices) throw new Error('请先保存纠错图，再送审核');
+      if (reviewed.has(sampleStatus(record))) throw new Error('请在最终审核页更正或撤回审核结果');
       record.status = nextStatus;
       const metaFile = path.join(dataRoot, 'meta', `${id}.json`);
-      if (nextStatus === 'pending') {
-        try { await unlink(metaFile); } catch {}
-      } else {
+      {
         let meta;
         try {
           meta = JSON.parse(await readFile(metaFile, 'utf8'));
-          meta.accepted_without_edit = nextStatus === 'accepted';
+          meta.accepted_without_edit = false;
         } catch {
           const paths = samplePaths(id);
           meta = { id, ...paths, width: record.width, height: record.height,
             model_version: record.model_version, palette: 'MARD',
-            accepted_without_edit: nextStatus === 'accepted',
+            accepted_without_edit: false,
             changed_pixels: record.changed_pixels || 0, timestamp: new Date().toISOString() };
         }
         await atomicWrite(metaFile, JSON.stringify(meta, null, 2));
@@ -200,15 +295,21 @@ export async function annotationApi(req, res) {
       const meta = { id, ...paths, width: record.width, height: record.height,
         model_version: record.model_version, palette: 'MARD', accepted_without_edit: Boolean(input.accept),
         changed_pixels: changed, timestamp: new Date().toISOString() };
+      record.status = input.accept ? 'pending' : 'human_edited';
+      record.annotation_source = input.accept ? 'human_accept' : 'human';
+      record.changed_pixels = changed;
+      delete record.reviewed_at;
+      meta.annotation_source = record.annotation_source;
+      delete meta.review_status;
+      delete meta.reviewed_at;
       await atomicWrite(path.join(dataRoot, 'meta', `${id}.json`), JSON.stringify(meta, null, 2));
-      record.status = input.accept ? 'accepted' : 'edited'; record.changed_pixels = changed;
       record.corrected_indices = [...edited];
       await atomicWrite(file, JSON.stringify(record, null, 2));
       json(res, 200, meta); return true;
     }
     json(res, 404, { error: '接口不存在' }); return true;
   } catch (error) {
-    json(res, error.code === 'ENOENT' ? 404 : 400, { error: error.message || '请求失败' });
+    json(res, error.status || (error.code === 'ENOENT' ? 404 : 400), { error: error.message || '请求失败' });
     return true;
   }
 }

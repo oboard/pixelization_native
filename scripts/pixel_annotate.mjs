@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -501,7 +502,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
 常用命令:
   list                 列出样本队列进度与筛选列表
                        --size 24|52|78|104
-                       --status pending|edited|accepted|all
+                       --status unmodified|pending|human_edited|qualified|unqualified|all
                        --limit 20  --offset 0  --search <id>
 
   next                 获取下一个待标注样本 ID
@@ -526,8 +527,20 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
 
   save <id>            提交保存纠错标注 (生成 corrected.png, edit_mask.png, meta.json)
                        --accept (直接通过，0 处修改)
+                       --status pending|human_edited (默认 pending)
 
-  status <id> <status> 手动更改标注状态 (pending | edited | accepted)
+  recipe-preview <n>  为已定义的简单图案生成原图与 24/52/78/104 多尺寸预览
+                       --sizes 24,52,78,104 (可只选部分尺寸)
+
+  recipe-apply <n>    将看过的配方预览写入纠错图、mask、meta；状态为 pending
+                       --sizes 24,52,78,104  --force (明确覆盖已有标注)
+
+  recipe-list         列出目前已经检查并写成配方的图案序号
+
+  batch-clean         批量清理候选，默认只统计；--save 才写入待审核标注
+                       --size 24|52|78|104  --limit 50
+
+  status <id> <status> 手动更改标注状态 (pending | human_edited)
                        可将已保存的样本重置为 "pending" (待审核)
 
   diff <id>            查看当前编辑与原始模型预测的所有差异点 (坐标与颜色)
@@ -544,12 +557,36 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
   # 3. 进行修正修图 (去背景 + 修线 + 换色)
   node scripts/pixel_annotate.mjs edit 8_24 --remove-bg --set 10,12:H07 10,13:H07
 
-  # 4. 保存提交标注
+  # 4. 保存待审核标注
   node scripts/pixel_annotate.mjs save 8_24
 
-  # 5. 如果需要改成待审核状态
-  node scripts/pixel_annotate.mjs status 8_24 pending
+  # 5. 人工修图后可标为已人工修改
+  node scripts/pixel_annotate.mjs status 8_24 human_edited
+
+  # 6. 预览并应用一组已定义的简单图案
+  node scripts/pixel_annotate.mjs recipe-preview 122
+  node scripts/pixel_annotate.mjs recipe-apply 122
 `);
+      return;
+    }
+
+    if (command === 'recipe-list' || command === 'recipe-preview' || command === 'recipe-apply') {
+      const ids = args._.slice(1);
+      if (command !== 'recipe-list' && (ids.length === 0 || ids.some(id => !/^\d+$/.test(id)))) {
+        throw new Error(`用法: ${command} <图片序号> [更多序号] [--sizes 24,52,78,104]`);
+      }
+      const sizes = String(args.sizes || '24,52,78,104').split(',').map(s => s.trim());
+      if (sizes.some(s => !['24', '52', '78', '104'].includes(s))) {
+        throw new Error('尺寸只能从 24,52,78,104 中选择');
+      }
+      const python = process.env.PYTHON || 'python3';
+      const recipeScript = path.join(projectRoot, 'scripts/pixel_annotation_recipes.py');
+      const mode = command === 'recipe-list' ? 'list' : command === 'recipe-preview' ? 'preview' : 'apply';
+      const pythonArgs = [recipeScript, mode, ...ids, '--sizes', ...sizes, '--data-dir', dataRoot];
+      if (args.force) pythonArgs.push('--force');
+      const result = spawnSync(python, pythonArgs, { cwd: projectRoot, stdio: 'inherit' });
+      if (result.error) throw result.error;
+      if (result.status !== 0) process.exit(result.status || 1);
       return;
     }
 
@@ -572,10 +609,10 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
 
       for (const id of allIds) {
         const rec = JSON.parse(await readFile(path.join(indicesDir, `${id}.json`), 'utf8'));
-        const st = rec.status || 'pending';
+        const st = rec.status || (rec.corrected_indices ? 'pending' : 'unmodified');
         if (st === 'pending') totalPending++;
-        else if (st === 'edited') { totalEdited++; totalCompleted++; }
-        else if (st === 'accepted') { totalAccepted++; totalCompleted++; }
+        else if (st === 'human_edited') totalEdited++;
+        else if (st === 'qualified') { totalAccepted++; totalCompleted++; }
 
         if (sizeFilter && String(rec.width) !== sizeFilter) continue;
         if (statusFilter && statusFilter !== 'all' && st !== statusFilter) continue;
@@ -593,7 +630,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       const page = records.slice(offset, offset + limit);
       page.forEach((r, idx) => {
         const no = String(offset + idx + 1).padStart(4, '0');
-        const stLabel = r.status === 'accepted' ? '✅ 通过' : r.status === 'edited' ? '✏️ 已改' : '⏳ 待审';
+        const stLabel = ({ unmodified: '未修改', pending: '待审核', human_edited: '已人工修改', qualified: '合格', unqualified: '不合格' })[r.status] || '未修改';
         console.log(
           `${no}  ${r.id.padEnd(16)}${`${r.width}×${r.height}`.padEnd(12)}${stLabel.padEnd(10)}${String(r.changed_pixels || 0).padEnd(14)}${r.model_version || ''}`
         );
@@ -613,7 +650,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       for (const id of allIds) {
         const rec = JSON.parse(await readFile(path.join(indicesDir, `${id}.json`), 'utf8'));
         if (sizeFilter && String(rec.width) !== sizeFilter) continue;
-        if (!rec.status || rec.status === 'pending') {
+        if (!rec.corrected_indices && (!rec.status || rec.status === 'unmodified')) {
           console.log(id);
           return;
         }
@@ -646,7 +683,8 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
 
       console.log(`\n🖼️ 样本 ID: ${rec.id}`);
       console.log(`- 尺寸: ${rec.width} × ${rec.height}`);
-      console.log(`- 状态: ${rec.status || 'pending'} (已修改: ${rec.changed_pixels || 0} 格)`);
+      console.log(`- 状态: ${rec.status || 'unmodified'} (已修改: ${rec.changed_pixels || 0} 格)`);
+      if (rec.review_reason) console.log(`- 上次不合格原因: ${rec.review_reason}`);
       console.log(`- 模型版本: ${rec.model_version}`);
 
       // Count colors
@@ -709,21 +747,29 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
     if (command === 'status') {
       const id = args._[1];
       const nextStatus = args._[2];
-      if (!id || !nextStatus || !['pending', 'accepted', 'edited'].includes(nextStatus)) {
-        throw new Error('用法: node scripts/pixel_annotate.mjs status <id> <pending|accepted|edited>');
+      if (!id || !nextStatus || !['pending', 'human_edited'].includes(nextStatus)) {
+        throw new Error('用法: node scripts/pixel_annotate.mjs status <id> <pending|human_edited>');
       }
       const recFile = path.join(dataRoot, 'indices', `${id}.json`);
       const rec = JSON.parse(await readFile(recFile, 'utf8'));
+      if (!rec.corrected_indices) throw new Error('请先保存纠错图');
       rec.status = nextStatus;
 
       const metaFile = path.join(dataRoot, 'meta', `${id}.json`);
       if (nextStatus === 'pending') {
-        try { await unlink(metaFile); } catch {}
+        // A saved correction can remain pending review; keep its training metadata.
+        try {
+          const meta = JSON.parse(await readFile(metaFile, 'utf8'));
+          meta.accepted_without_edit = false;
+          await atomicWrite(metaFile, JSON.stringify(meta, null, 2));
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
       } else {
         let meta;
         try {
           meta = JSON.parse(await readFile(metaFile, 'utf8'));
-          meta.accepted_without_edit = nextStatus === 'accepted';
+          meta.accepted_without_edit = false;
         } catch {
           meta = {
             id,
@@ -735,7 +781,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
             height: rec.height,
             model_version: rec.model_version,
             palette: 'MARD',
-            accepted_without_edit: nextStatus === 'accepted',
+            accepted_without_edit: false,
             changed_pixels: rec.changed_pixels || 0,
             timestamp: new Date().toISOString()
           };
@@ -748,7 +794,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       return;
     }
 
-        if (command === 'batch-clean') {
+    if (command === 'batch-clean') {
       const indicesDir = path.join(dataRoot, 'indices');
       const allFiles = (await readdir(indicesDir)).filter(f => f.endsWith('.json'));
       const allIds = allFiles.map(f => f.slice(0, -5)).sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
@@ -757,7 +803,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       const limit = Number(args.limit || 50);
       const doRemoveBg = args['remove-bg'] !== false;
       const doCleanFringe = Boolean(args['clean-fringe']);
-      const doSave = args.save !== false;
+      const doSave = Boolean(args.save);
 
       let processed = 0;
       console.log(`\n🚀 批量预标注/清洗开始 (上限 ${limit} 条, 尺寸=${sizeFilter || "全部"})...`);
@@ -767,7 +813,8 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
         const recFile = path.join(indicesDir, `${id}.json`);
         const rec = JSON.parse(await readFile(recFile, 'utf8'));
         if (sizeFilter && String(rec.width) !== sizeFilter) continue;
-        if (rec.status && rec.status !== 'pending') continue;
+        if (rec.status && rec.status !== 'unmodified') continue;
+        if (rec.corrected_indices && !args.force) continue;
 
         let pixels = [...(rec.corrected_indices || rec.indices)];
         let changed = false;
@@ -824,17 +871,21 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
           };
           await atomicWrite(path.join(dataRoot, 'meta', `${id}.json`), JSON.stringify(meta, null, 2));
 
-          rec.status = 'edited';
+          rec.status = 'pending';
+          rec.annotation_source = 'ai';
           rec.changed_pixels = diffCount;
           rec.corrected_indices = pixels;
           await atomicWrite(recFile, JSON.stringify(rec, null, 2));
 
+          console.log(`  [${processed + 1}/${limit}] ${id} (${rec.width}×${rec.height}) -> 已保存待审核标注 (${diffCount} 像素)`);
+        }
+        if (changed) {
           processed++;
-          console.log(`  [${processed}/${limit}] ${id} (${rec.width}×${rec.height}) -> 已处理并保存 (${diffCount} 像素)`);
+          if (!doSave) console.log(`  [${processed}/${limit}] ${id} (${rec.width}×${rec.height}) -> 有可清理背景，未写入`);
         }
       }
 
-      console.log(`\n✨ 批量预处理完成! 共处理并保存 ${processed} 条样本。\n`);
+      console.log(`\n✨ 批量预处理完成! 共发现 ${processed} 条候选${doSave ? '并保存为待审核标注' : '，未写入'}。\n`);
       return;
     }
 
@@ -970,6 +1021,10 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       const id = args._[1];
       if (!id) throw new Error('请指定样本 ID');
       const accept = Boolean(args.accept);
+      const saveStatus = String(args.status || 'pending');
+      if (!['pending', 'human_edited'].includes(saveStatus)) {
+        throw new Error('save 的状态只能是 pending 或 human_edited');
+      }
       const recFile = path.join(dataRoot, 'indices', `${id}.json`);
       const rec = JSON.parse(await readFile(recFile, 'utf8'));
 
@@ -1015,12 +1070,15 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
         palette: 'MARD',
         accepted_without_edit: accept,
         changed_pixels: accept ? 0 : changed,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        annotation_source: 'ai'
       };
 
       await atomicWrite(path.join(dataRoot, 'meta', `${id}.json`), JSON.stringify(meta, null, 2));
 
-      rec.status = accept ? 'accepted' : 'edited';
+      rec.status = saveStatus;
+      rec.annotation_source = 'ai';
+      delete rec.reviewed_at;
       rec.changed_pixels = accept ? 0 : changed;
       rec.corrected_indices = edited;
       await atomicWrite(recFile, JSON.stringify(rec, null, 2));

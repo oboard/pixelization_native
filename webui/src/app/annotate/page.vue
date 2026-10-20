@@ -5,8 +5,9 @@ import { cleanColorFringe } from './cleanColorFringe';
 
 type Tool = 'pencil' | 'eraser' | 'picker' | 'line' | 'rectangle' | 'fill';
 type PixelPosition = { x: number; y: number };
-type SampleSummary = { id: string; width: number; height: number; model_version: string; status: 'pending' | 'accepted' | 'edited'; changed_pixels: number };
-type Sample = SampleSummary & { indices: number[]; corrected_indices?: number[]; paths: Record<string, string> };
+type AnnotationStatus = 'unmodified' | 'pending' | 'human_edited' | 'qualified' | 'unqualified';
+type SampleSummary = { id: string; width: number; height: number; model_version: string; status: AnnotationStatus; changed_pixels: number };
+type Sample = SampleSummary & { indices: number[]; corrected_indices?: number[]; review_reason?: string; paths: Record<string, string> };
 type SamplePage = { items: SampleSummary[]; total: number; all_total: number; completed: number; offset: number; limit: number };
 type PaletteColor = { hex: string; code: string };
 type SizeFilter = '' | '24' | '52' | '78' | '104';
@@ -86,6 +87,7 @@ const colorUsage = computed(() => {
   return [...counts].map(([index, count]) => ({ index, count, ...palette[index] }))
     .sort((a, b) => b.count - a.count || a.index - b.index);
 });
+const statusLabel = (status: AnnotationStatus) => ({ unmodified: '未修改', pending: '待审核', human_edited: '已人工修改', qualified: '合格', unqualified: '不合格' })[status];
 const imageUrl = (id: string, kind: string) => `/api/annotation/samples/${encodeURIComponent(id)}/image?kind=${kind}`;
 
 function pickUsedColor(index: number) {
@@ -438,17 +440,23 @@ async function save(accept = false): Promise<boolean> {
   busy.value = true; error.value = ''; notice.value = '';
   try {
     const id = sample.value.id;
+    const wasRejected = sample.value.status === 'unqualified';
     const saved = accept ? [...sample.value.indices] : [...pixels.value];
     const result = await request<{ changed_pixels: number }>(`/api/annotation/samples/${encodeURIComponent(id)}/save`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accept, indices: saved }),
     });
     await refreshSamples();
+    // Saving a rejected sample removes it from the priority section. Start
+    // Next from the new head so no other rejected sample is skipped.
+    if (wasRejected) selectedIndex.value = -1;
     if (sample.value?.id === id) {
       if (accept) pixels.value = saved;
       savedPixels.value = saved;
+      sample.value.status = accept ? 'pending' : 'human_edited';
+      sample.value.corrected_indices = saved;
     }
-    notice.value = `${id} 已${accept ? '通过' : '保存'} · ${result.changed_pixels} 处修改`;
+    notice.value = `${id} 已${accept ? '送审核' : '保存为已人工修改'} · ${result.changed_pixels} 处修改`;
     return true;
   } catch (cause) { error.value = message(cause); return false; }
   finally { busy.value = false; }
@@ -464,7 +472,7 @@ async function nextSample(force = false) {
     if (listElement.value) listElement.value.scrollTop = index * ROW_HEIGHT;
   }
 }
-async function updateStatus(nextStatus: 'pending' | 'accepted' | 'edited') {
+async function updateStatus(nextStatus: 'pending' | 'human_edited') {
   if (!sample.value || busy.value || sample.value.status === nextStatus) return;
   busy.value = true; error.value = ''; notice.value = '';
   try {
@@ -477,7 +485,7 @@ async function updateStatus(nextStatus: 'pending' | 'accepted' | 'edited') {
       sample.value.status = nextStatus;
     }
     await refreshSamples();
-    const label = nextStatus === 'pending' ? '待审核' : nextStatus === 'accepted' ? '已通过' : '已改';
+    const label = nextStatus === 'pending' ? '待审核' : '已人工修改';
     notice.value = `${id} 状态已更新为「${label}」`;
   } catch (cause) {
     error.value = message(cause);
@@ -535,6 +543,7 @@ function keydown(event: KeyboardEvent) {
 function keyup(event: KeyboardEvent) { if (event.code === 'Space') spaceHeld = false; }
 function beforeUnload(event: BeforeUnloadEvent) { if (dirty.value) { event.preventDefault(); event.returnValue = ''; } }
 watch(sampleSearch, value => {
+  if (query.value === value.trim()) return;
   window.clearTimeout(searchTimer);
   searchTimer = window.setTimeout(() => {
     query.value = value.trim();
@@ -546,6 +555,8 @@ watch(sampleSearch, value => {
 });
 onMounted(async () => {
   window.addEventListener('keydown', keydown); window.addEventListener('keyup', keyup); window.addEventListener('beforeunload', beforeUnload);
+  const requestedId = new URLSearchParams(window.location.search).get('q') || '';
+  if (requestedId) { sampleSearch.value = requestedId; query.value = requestedId; }
   const storedSize = localStorage.getItem('annotationSizeFilter');
   if (storedSize === '24' || storedSize === '52' || storedSize === '78' || storedSize === '104') sizeFilter.value = storedSize;
   listHeight.value = listElement.value?.clientHeight || 500;
@@ -566,7 +577,7 @@ onUnmounted(() => { window.removeEventListener('keydown', keydown); window.remov
   <div class="annotator">
     <header class="topbar">
       <div class="brand"><span class="brand-mark">▦</span><div><strong>Pixel Review</strong><small>拼豆图纠错工作台</small></div></div>
-      <div class="top-status"><span class="status-dot"></span> 本地数据集 <b>{{ completedCount }} / {{ datasetTotal }}</b> 已完成</div>
+      <a class="review-link" href="/review">最终审核</a><div class="top-status"><span class="status-dot"></span> 本地数据集 <b>{{ completedCount }} / {{ datasetTotal }}</b> 已完成</div>
       <button class="primary import-button" @click="importOpen = true">＋ 导入样本</button>
     </header>
 
@@ -586,7 +597,7 @@ onUnmounted(() => { window.removeEventListener('keydown', keydown); window.remov
             <span class="row-number">{{ String(row.index + 1).padStart(5, '0') }}</span>
             <span class="thumb"><img v-if="row.item" :src="imageUrl(row.item.id, 'predictions')" alt=""></span>
             <span class="sample-info"><strong>{{ row.item?.id || '载入中…' }}</strong><small v-if="row.item">{{ row.item.width }} × {{ row.item.height }} · {{ row.item.model_version }}</small></span>
-            <span v-if="row.item" class="state" :class="row.item.status" :title="row.item.status">{{ row.item.status === 'pending' ? '待审' : row.item.status === 'accepted' ? '通过' : '已改' }}</span>
+            <span v-if="row.item" class="state" :class="row.item.status" :title="row.item.status">{{ statusLabel(row.item.status) }}</span>
           </button>
           <div :style="{ height: `${Math.max(0, total - visibleEnd) * ROW_HEIGHT}px` }"></div>
         </div>
@@ -594,7 +605,8 @@ onUnmounted(() => { window.removeEventListener('keydown', keydown); window.remov
       </aside>
 
       <main v-if="sample" class="main-area">
-        <div class="work-heading"><div><span class="eyebrow">ANNOTATION / {{ sample.id }}</span><h1>审阅与纠错</h1><p>按逻辑像素修正模型结果。保存时自动生成修正图与编辑 mask。</p></div><div class="heading-meta"><span>{{ sample.width }} × {{ sample.height }}</span><span>{{ sample.model_version }}</span><label class="status-select-wrap" :class="sample.status" title="切换样本审阅状态"><span class="status-indicator"></span><select :value="sample.status" :disabled="busy" @change="updateStatus(($event.target as HTMLSelectElement).value as any)"><option value="pending">待审核</option><option value="edited">已改</option><option value="accepted">通过</option></select></label></div></div>
+        <div class="work-heading"><div><span class="eyebrow">ANNOTATION / {{ sample.id }}</span><h1>审阅与纠错</h1><p>按逻辑像素修正模型结果。保存时自动生成修正图与编辑 mask。</p></div><div class="heading-meta"><span>{{ sample.width }} × {{ sample.height }}</span><span>{{ sample.model_version }}</span><label class="status-select-wrap" :class="sample.status" title="保存后可切换待审核与已人工修改；最终结果在审核页确认"><span class="status-indicator"></span><select :value="sample.status" :disabled="busy || !sample.corrected_indices || sample.status === 'qualified' || sample.status === 'unqualified'" aria-label="样本状态" @change="updateStatus(($event.target as HTMLSelectElement).value as 'pending' | 'human_edited')"><option value="unmodified" disabled>未修改</option><option value="pending">待审核</option><option value="human_edited">已人工修改</option><option value="qualified" disabled>合格 · 在最终审核页设置</option><option value="unqualified" disabled>不合格 · 在最终审核页设置</option></select></label></div></div>
+        <div v-if="sample.review_reason" class="review-reason"><strong>上次不合格原因：</strong>{{ sample.review_reason }}</div>
         <div class="boards">
           <section class="board source-board"><div class="board-title"><div><span class="section-number">01</span><h2>原图</h2></div><span>参考图像</span></div><div class="source-stage"><img :src="imageUrl(sample.id, 'sources')" alt="原图"></div><div class="board-caption">观察主体、轮廓与关键细节</div></section>
           <section class="board editor-board"><div class="board-title"><div><span class="section-number">02</span><h2>模型输出 · 可编辑</h2></div><span class="modified">{{ changedPixels }} 像素已修改</span></div>
@@ -602,7 +614,7 @@ onUnmounted(() => { window.removeEventListener('keydown', keydown); window.remov
             <div class="canvas-footer"><span>{{ hover ? `(${hover.x}, ${hover.y})` : '移动鼠标查看坐标' }}</span><div><button title="缩小" @click="changeZoom(-1)">−</button><span>{{ zoom }}×</span><button title="放大" @click="changeZoom(1)">＋</button></div><label><input v-model="grid" type="checkbox"> 网格</label></div>
           </section>
         </div>
-        <div class="action-bar"><div class="action-hint">{{ dirty ? '当前修改尚未保存' : '当前无未保存修改' }} <span>· 空格拖动画布，滚轮缩放</span></div><div class="action-buttons"><button class="quiet" @click="nextSample()">跳过 / 下一张 <kbd>N</kbd></button><button class="quiet" :disabled="busy" @click="save()">保存 <kbd>S</kbd></button><button class="secondary" :disabled="busy" @click="saveAndNext()">保存并下一张</button><button class="primary" :disabled="busy" @click="acceptAndNext()">直接通过 <kbd>A</kbd></button></div></div>
+        <div class="action-bar"><div class="action-hint">{{ dirty ? '当前修改尚未保存' : '当前无未保存修改' }} <span>· 空格拖动画布，滚轮缩放</span></div><div class="action-buttons"><button class="quiet" @click="nextSample()">跳过 / 下一张 <kbd>N</kbd></button><button class="quiet" :disabled="busy" @click="save()">保存 <kbd>S</kbd></button><button class="secondary" :disabled="busy" @click="saveAndNext()">保存并下一张</button><button class="primary" :disabled="busy" @click="acceptAndNext()">无需修改，送审核 <kbd>A</kbd></button></div></div>
       </main>
       <main v-else class="main-area welcome"><div class="welcome-icon">▦</div><h1>{{ filterBusy ? '正在载入样本' : datasetTotal ? '当前筛选没有样本' : '开始构建纠错数据集' }}</h1><p>{{ filterBusy ? '正在读取这个尺寸的样本队列。' : datasetTotal ? '试试其他尺寸，或清除搜索条件。' : '导入一张原图和对应的逻辑像素预测 PNG，随后即可逐格修改并保存训练数据。' }}</p><button v-if="!datasetTotal" class="primary" @click="importOpen = true">导入第一条样本</button></main>
 
@@ -630,13 +642,16 @@ onUnmounted(() => { window.removeEventListener('keydown', keydown); window.remov
 .transparent:hover{border-color:#b4c7c1;background:#f9fbfb;color:#20403a}
 .checker-icon{width:16px;height:16px;flex:none;border:1px solid #0002;border-radius:3px;display:block}
 
+.review-link{font-size:12px;font-weight:700;color:#245a56;text-decoration:none;padding:8px 10px;border:1px solid #d7e7df;border-radius:7px;background:#eef6f1}.review-link:hover{background:#e2f0e8}
 .status-select-wrap{display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid #dde7e2;border-radius:6px;padding:2px 8px 2px 9px;font-size:11px;font-weight:650;color:#3d5650;cursor:pointer;position:relative;transition:border-color .15s,background .15s}
 .status-select-wrap:hover{border-color:#9cbdb3}
 .status-select-wrap select{border:0;background:transparent;color:inherit;font-weight:inherit;font-size:11px;cursor:pointer;outline:none;padding:3px 0}
 .status-indicator{display:inline-block;width:7px;height:7px;border-radius:50%;flex:none;background:#9aa9a6}
 .status-select-wrap.pending .status-indicator{background:#eab308}
-.status-select-wrap.accepted .status-indicator{background:#2b9b74}
-.status-select-wrap.edited .status-indicator{background:#e96f43}
+.status-select-wrap.qualified .status-indicator{background:#2b9b74}
+.status-select-wrap.unqualified .status-indicator{background:#c3483e}
+.status-select-wrap.human_edited .status-indicator{background:#e96f43}
+.review-reason{padding:10px 13px;margin:-8px 0 16px;background:#fff2ed;border:1px solid #f2d2c5;border-radius:8px;color:#934c38;font-size:12px;line-height:1.5}
 </style>
 <style scoped>
 @media(max-width:650px){.boards{height:auto}.board{min-height:0}.source-stage{min-height:230px}.canvas-viewport{min-height:380px}.source-board{height:330px}.editor-board{height:490px}}
