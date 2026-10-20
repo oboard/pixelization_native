@@ -768,6 +768,12 @@ def flat_classes(source: np.ndarray, size: int, profile: dict) -> np.ndarray:
         x1, y1, x2, y2 = [round(v * size / 512) for v in patch['rect']]
         region = result[y1:y2 + 1, x1:x2 + 1]
         region[region == patch['from']] = patch['color']
+    for stroke in profile.get('strokes', []):
+        mask = Image.new('L', (size, size))
+        points = [(min(size - 1, round(x * (size - 1) / 511)),
+                   min(size - 1, round(y * (size - 1) / 511))) for x, y in stroke['points']]
+        ImageDraw.Draw(mask).line(points, fill=255, width=max(1, round(stroke['width'] * size / 512)))
+        result[(np.asarray(mask) > 0) & (result >= 0)] = stroke['color']
     return result
 
 

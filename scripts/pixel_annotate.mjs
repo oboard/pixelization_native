@@ -500,6 +500,8 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
   node scripts/pixel_annotate.mjs <command> [options]
 
 常用命令:
+  profile-stroke <序号>  追加细线（512 坐标，自动适配四种尺寸，裁切到主体内）
+                       --points 'x,y;x,y;...' --color <索引> --width 4
   profile-grid <序号>   保存指定尺寸的手工像素稿
                        --size 24 --rows '逐行字符，用 / 分隔' --legend '.:-1,K:189,W:184,P:244,Y:246'
   profile-patch <序号>  追加局部改色（坐标基于 512×512 原图）
@@ -576,6 +578,18 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
   node scripts/pixel_annotate.mjs recipe-preview 122
   node scripts/pixel_annotate.mjs recipe-apply 122
 `);
+      return;
+    }
+
+    if (command === 'profile-stroke') {
+      const id = args._[1], color = Number(args.color), width = Number(args.width ?? 4);
+      const points = String(args.points || '').split(';').map(p => p.split(',').map(Number));
+      if (!/^\d+$/.test(id || '') || args.color === undefined || !Number.isInteger(color) || color < 0 || color >= palette.length || !Number.isFinite(width) || width <= 0 || width > 512 || points.length < 2 || points.some(p => p.length !== 2 || p.some(v => !Number.isFinite(v) || v < 0 || v > 512))) throw new Error('需要有效的序号、--points、--color 和 --width');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      profile.strokes = [...(profile.strokes || []), { points, color, width }];
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已追加 ${id} 细线，请重新预览。`);
       return;
     }
 

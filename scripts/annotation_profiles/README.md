@@ -16,6 +16,9 @@ node scripts/pixel_annotate.mjs recipe-apply 498 --sizes 52,78,104
 - `--symmetry` 对颜色覆盖率作左右平均，适合正面表情、对称图案。
 - `--outline` 将主体边界统一为墨线色，适合需要连续黑边的图案。
 - `profile-patch` 在 512×512 坐标框内替换指定索引，不影响其他颜色。
+- `profile-stroke <序号> --points '145,218;226,199' --color 38 --width 3`
+  添加按 512×512 原图坐标定义的折线。自动缩放到逻辑像素，最细一格，
+  裁切到主体内部。可重复调用绘制叶脉、衣服缝线等细节。
 - `profile-set` 会替换已有配置，包括局部修正；追加修正用 `profile-patch`。
 - `profile-grid <序号> --size 24 --rows '<24 行字符，以 / 分隔>' --legend '.:-1,K:189,W:184,P:244,Y:246'`
   保存单独设计的 24×24 像素稿。每行必须 24 个字符；映射到固定色板，
