@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -500,6 +500,15 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
   node scripts/pixel_annotate.mjs <command> [options]
 
 常用命令:
+  profile-grid <序号>   保存指定尺寸的手工像素稿
+                       --size 24 --rows '逐行字符，用 / 分隔' --legend '.:-1,K:189,W:184,P:244,Y:246'
+  profile-patch <序号>  追加局部改色（坐标基于 512×512 原图）
+                       --rect x1,y1,x2,y2 --from <原色板索引> --color <新色板索引>
+  profile-set <序号>    保存可复用的平涂纠错参数（第一色必须是背景）
+                       --colors '#FFFFFF:-1,#F29DE8:244,#FFFF00:246,#000000:189'
+                       --ink 3 --enclosed-white 184 --coverage 0.44 --ink-coverage 0.24
+                       --symmetry --outline（可选）
+                       然后 recipe-preview / recipe-apply <序号>，支持 --sizes
   list                 列出样本队列进度与筛选列表
                        --size 24|52|78|104
                        --status unmodified|pending|human_edited|qualified|unqualified|all
@@ -567,6 +576,69 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
   node scripts/pixel_annotate.mjs recipe-preview 122
   node scripts/pixel_annotate.mjs recipe-apply 122
 `);
+      return;
+    }
+
+    if (command === 'profile-grid') {
+      const id = args._[1], size = Number(args.size);
+      if (!/^\d+$/.test(id || '') || ![24, 52, 78, 104].includes(size)) throw new Error('需要图片序号及 --size');
+      const legend = {};
+      for (const entry of String(args.legend || '').split(',')) {
+        const match = entry.match(/^(.):(-?\d+)$/u);
+        if (!match || Number(match[2]) < -1 || Number(match[2]) >= palette.length) throw new Error('无效的 --legend 字符:索引');
+        legend[match[1]] = Number(match[2]);
+      }
+      const rows = String(args.rows || '').split('/');
+      if (rows.length !== size || rows.some(row => [...row].length !== size || [...row].some(c => legend[c] === undefined))) throw new Error('像素稿行列数必须等于尺寸，字符必须在 legend 中定义');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      profile.sizes ??= {};
+      profile.sizes[size] = { ...(profile.sizes[size] || {}), grid: rows.map(row => [...row].map(c => legend[c])) };
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已保存 ${id} 的 ${size}×${size} 手工像素稿，请重新预览。`);
+      return;
+    }
+
+    if (command === 'profile-patch') {
+      const id = args._[1];
+      if (!/^\d+$/.test(id || '')) throw new Error('需要图片序号');
+      const rect = String(args.rect || '').split(',').map(Number);
+      if (rect.length !== 4 || !rect.every(n => Number.isFinite(n) && n >= 0 && n <= 512) || rect[0] > rect[2] || rect[1] > rect[3]) throw new Error('--rect 需要 x1,y1,x2,y2，范围 0..512');
+      const color = Number(args.color), from = Number(args.from);
+      if (![color, from].every(n => Number.isInteger(n) && n >= -1 && n < palette.length) || args.color === undefined || args.from === undefined) throw new Error('需要有效的 --from 和 --color 色板索引');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      profile.patches = [...(profile.patches || []), { rect, from, color }];
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已追加 ${id} 局部改色，请重新生成预览。`);
+      return;
+    }
+
+    if (command === 'profile-set') {
+      const id = args._[1];
+      if (!/^\d+$/.test(id || '') || typeof args.colors !== 'string') throw new Error('需要图片序号和 --colors HEX:index,...');
+      const entries = args.colors.split(',').map(entry => {
+        const match = entry.trim().match(/^#([\da-f]{6}):(-?\d+)$/i);
+        if (!match) throw new Error(`无效颜色: ${entry}`);
+        const index = Number(match[2]);
+        if (index < -1 || index >= palette.length) throw new Error('色板索引超出范围');
+        return { rgb: [0, 2, 4].map(i => parseInt(match[1].slice(i, i + 2), 16)), index };
+      });
+      if (entries.length < 2 || entries[0].index !== -1 || entries.slice(1).some(e => e.index < 0)) throw new Error('第一色必须为 -1 背景，其他颜色必须对应色板');
+      const profile = {
+        rgb: entries.map(e => e.rgb), indices: entries.map(e => e.index),
+        coverage: Number(args.coverage ?? .44), ink_coverage: Number(args['ink-coverage'] ?? .24),
+        symmetry: Boolean(args.symmetry), outline: Boolean(args.outline),
+      };
+      if (args.ink !== undefined) profile.ink = Number(args.ink);
+      if (args['enclosed-white'] !== undefined) profile.enclosed_white = Number(args['enclosed-white']);
+      if (![profile.coverage, profile.ink_coverage].every(n => Number.isFinite(n) && n > 0 && n <= 1)) throw new Error('覆盖率必须大于 0 且不超过 1');
+      if (profile.ink !== undefined && (!Number.isInteger(profile.ink) || profile.ink < 1 || profile.ink >= entries.length)) throw new Error('--ink 必须是非背景颜色的位置，从 0 开始');
+      if (profile.enclosed_white !== undefined && (!Number.isInteger(profile.enclosed_white) || profile.enclosed_white < 0 || profile.enclosed_white >= palette.length)) throw new Error('--enclosed-white 必须是有效色板索引');
+      const dir = path.join(projectRoot, 'scripts/annotation_profiles');
+      await mkdir(dir, { recursive: true });
+      await atomicWrite(path.join(dir, `${id}.json`), JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已保存 ${id} 配置；运行 recipe-preview ${id} 检查四种尺寸，再 recipe-apply ${id} 送审。`);
       return;
     }
 

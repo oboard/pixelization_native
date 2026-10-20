@@ -29,6 +29,7 @@ DATA = ROOT / "webui" / "data"
 REVIEWS = DATA / "reviews" / "recipes"
 PALETTE = list(json.loads((ROOT / "webui/src/app/colorSystemMapping.json").read_text()))
 SIZES = (24, 52, 78, 104)
+PROFILES = ROOT / 'scripts' / 'annotation_profiles'
 RECIPE_NAMES = {
     2: "pink starfish with raised right arm",
     10: "solid yellow star",
@@ -86,6 +87,9 @@ def classes(source: np.ndarray, size: int, recipe_id: int) -> np.ndarray:
     r, g, b = source.astype(np.float32).transpose(2, 0, 1)
     result = np.full((size, size), -1, dtype=np.int16)
     threshold = 0.4 if size == 24 else 0.42 if size == 52 else 0.5
+    profile_file = PROFILES / f'{recipe_id}.json'
+    if profile_file.exists():
+        return flat_classes(source, size, json.loads(profile_file.read_text()))
 
     if recipe_id == 2:  # Preserve source silhouette and enclosed eye whites.
         prototypes = np.array([
@@ -720,6 +724,53 @@ def classes(source: np.ndarray, size: int, recipe_id: int) -> np.ndarray:
     return result
 
 
+def flat_classes(source: np.ndarray, size: int, profile: dict) -> np.ndarray:
+    """Reusable exclusive color regions, enclosed whites, and ink coverage."""
+    profile = {**profile, **profile.get('sizes', {}).get(str(size), {})}
+    if 'grid' in profile:
+        grid = np.asarray(profile['grid'], dtype=np.int16)
+        if grid.shape != (size, size) or grid.min() < -1 or grid.max() >= len(PALETTE):
+            raise ValueError('Invalid hand-authored palette grid')
+        return grid.copy()
+    prototypes = np.array(profile['rgb'], dtype=np.float32)
+    labels = ((source.astype(np.float32)[:, :, None, :] - prototypes) ** 2).sum(3).argmin(2)
+    colors = list(profile['indices'])
+    if profile.get('enclosed_white') is not None:
+        white = Image.fromarray((labels == 0).astype(np.uint8) * 255, 'L').copy()
+        width, height = white.size
+        for x in range(width):
+            for y in (0, height - 1):
+                if white.getpixel((x, y)) == 255:
+                    ImageDraw.floodfill(white, (x, y), 0)
+        for y in range(height):
+            for x in (0, width - 1):
+                if white.getpixel((x, y)) == 255:
+                    ImageDraw.floodfill(white, (x, y), 0)
+        labels[np.asarray(white) == 255] = len(colors)
+        colors.append(profile['enclosed_white'])
+    fractions = np.stack([cover(labels == i, size) for i in range(len(colors))])
+    if profile.get('symmetry'):
+        fractions = (fractions + fractions[:, :, ::-1]) / 2
+    present = 1 - fractions[0] >= profile['coverage']
+    ink = profile.get('ink')
+    if ink is not None:
+        present |= fractions[ink] >= profile['ink_coverage']
+    dominant = fractions[1:].argmax(0) + 1
+    result = np.full((size, size), -1, dtype=np.int16)
+    result[present] = np.array(colors, dtype=np.int16)[dominant[present]]
+    if ink is not None:
+        result[present & (fractions[ink] >= profile['ink_coverage'])] = colors[ink]
+    if profile.get('outline') and ink is not None:
+        p = np.pad(present, 1)
+        inside = p[1:-1, 1:-1] & p[:-2, 1:-1] & p[2:, 1:-1] & p[1:-1, :-2] & p[1:-1, 2:]
+        result[present & ~inside] = colors[ink]
+    for patch in profile.get('patches', []):
+        x1, y1, x2, y2 = [round(v * size / 512) for v in patch['rect']]
+        region = result[y1:y2 + 1, x1:x2 + 1]
+        region[region == patch['from']] = patch['color']
+    return result
+
+
 def render(indices: np.ndarray) -> Image.Image:
     size = indices.shape[0]
     rgba = np.zeros((size, size, 4), dtype=np.uint8)
@@ -741,6 +792,9 @@ def atomic_json(path: Path, value: dict) -> None:
 def recipe_fingerprint(recipe_id: int, sizes: tuple[int, ...]) -> str:
     digest = hashlib.sha256(Path(__file__).read_bytes())
     digest.update(f"{recipe_id}:{','.join(map(str, sizes))}".encode())
+    profile = PROFILES / f'{recipe_id}.json'
+    if profile.exists():
+        digest.update(profile.read_bytes())
     for size in sizes:
         digest.update((DATA / "sources" / f"{recipe_id}_{size}.png").read_bytes())
     return digest.hexdigest()
