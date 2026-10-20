@@ -2,6 +2,7 @@
 
 import { mkdir, readFile as fsReadFile, readdir as fsReaddir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
@@ -585,6 +586,11 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
   node scripts/pixel_annotate.mjs <command> [options]
 
 常用命令:
+  export <样本ID>       导出原尺寸 PNG，默认保存到 ~/Downloads
+                       --kind corrected|prediction|mask|source（默认 corrected）
+                       --output /path/to/image.png
+  profile-region <序号> 添加多边形填色或主体裁切
+                       --points 'x,y;x,y;...' --color <索引> 或 --mask
   profile-ellipse <序号> 添加圆形或椭圆细节（512 坐标）
                        --rect x1,y1,x2,y2 --color <索引> --outline <索引> --width 4
   profile-mirror <序号> 镜像指定尺寸手工稿的左半边到右半边
@@ -667,6 +673,37 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
   node scripts/pixel_annotate.mjs recipe-preview 122
   node scripts/pixel_annotate.mjs recipe-apply 122
 `);
+      return;
+    }
+
+    if (command === 'export') {
+      const id = args._[1];
+      if (!/^[\w-]+$/.test(id || '')) throw new Error('需要有效的样本 ID，例如 4236_52');
+      const kind = args.kind || 'corrected';
+      const folders = { corrected: 'corrected', prediction: 'predictions', mask: 'edit_masks', source: 'sources' };
+      if (!Object.hasOwn(folders, kind)) throw new Error('--kind 只能为 corrected、prediction、mask 或 source');
+      const bytes = await readFile(path.join(activeDataRoot, folders[kind], `${id}.png`));
+      const png = PNG.sync.read(bytes);
+      const output = args.output === undefined
+        ? path.join(homedir(), 'Downloads', `${id}_${kind}.png`)
+        : typeof args.output === 'string' ? path.resolve(args.output) : null;
+      if (!output || path.extname(output).toLowerCase() !== '.png') throw new Error('--output 需要 PNG 文件路径');
+      await mkdir(path.dirname(output), { recursive: true });
+      await writeFile(output, bytes);
+      console.log(`已导出 ${png.width}×${png.height} PNG：${output}`);
+      return;
+    }
+
+    if (command === 'profile-region') {
+      const id = args._[1], color = Number(args.color);
+      const points = String(args.points || '').split(';').map(p => p.split(',').map(Number));
+      if (!/^\d+$/.test(id || '') || (!args.mask && (args.color === undefined || !Number.isInteger(color) || color < 0 || color >= palette.length)) || points.length < 3 || points.some(p => p.length !== 2 || p.some(v => !Number.isFinite(v) || v < 0 || v > 512))) throw new Error('需要有效的多边形坐标和 --color 或 --mask');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      if (args.mask) profile.mask = points;
+      else profile.regions = [...(profile.regions || []), { points, color }];
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已保存 ${id} 多边形，请重新预览。`);
       return;
     }
 
@@ -763,6 +800,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
         rgb: entries.map(e => e.rgb), indices: entries.map(e => e.index),
         coverage: Number(args.coverage ?? .44), ink_coverage: Number(args['ink-coverage'] ?? .24),
         symmetry: Boolean(args.symmetry), outline: Boolean(args.outline),
+        regions_only: Boolean(args['regions-only']),
       };
       if (args.ink !== undefined) profile.ink = Number(args.ink);
       if (args['enclosed-white'] !== undefined) profile.enclosed_white = Number(args['enclosed-white']);

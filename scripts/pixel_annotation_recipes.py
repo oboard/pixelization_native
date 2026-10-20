@@ -777,6 +777,17 @@ def flat_classes(source: np.ndarray, size: int, profile: dict) -> np.ndarray:
         p = np.pad(present, 1)
         inside = p[1:-1, 1:-1] & p[:-2, 1:-1] & p[2:, 1:-1] & p[1:-1, :-2] & p[1:-1, 2:]
         result[present & ~inside] = colors[ink]
+    def polygon_mask(points):
+        mask = Image.new('L', (size, size))
+        ImageDraw.Draw(mask).polygon([(round(x * (size - 1) / 511), round(y * (size - 1) / 511))
+                                     for x, y in points], fill=255)
+        return np.asarray(mask) > 0
+    if profile.get('mask'):
+        result[~polygon_mask(profile['mask'])] = -1
+    if profile.get('regions_only'):
+        result[:] = -1
+    for region in profile.get('regions', []):
+        result[polygon_mask(region['points'])] = region['color']
     for patch in profile.get('patches', []):
         x1, y1, x2, y2 = [round(v * size / 512) for v in patch['rect']]
         region = result[y1:y2 + 1, x1:x2 + 1]

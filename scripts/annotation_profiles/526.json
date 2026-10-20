@@ -30,5 +30,18 @@
   "coverage": 0.45,
   "ink_coverage": 0.24,
   "symmetry": false,
-  "outline": false
+  "outline": false,
+  "ellipses": [
+    {
+      "rect": [
+        274,
+        370,
+        374,
+        466
+      ],
+      "color": 251,
+      "outline": 251,
+      "width": 4
+    }
+  ]
 }
