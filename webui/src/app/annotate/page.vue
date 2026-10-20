@@ -42,6 +42,7 @@ const selectedColor = ref(0);
 const tool = ref<Tool>('pencil');
 const zoom = ref(12);
 const grid = ref(true);
+const editorBackground = ref<'light' | 'dark'>('light');
 const hover = ref<{ x: number; y: number } | null>(null);
 const canvas = ref<HTMLCanvasElement | null>(null);
 const viewport = ref<HTMLDivElement | null>(null);
@@ -200,7 +201,11 @@ function draw() {
   ctx.imageSmoothingEnabled = false;
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
     const i = y * width + x;
-    ctx.fillStyle = pixels.value[i] === -1 ? ((x + y) % 2 ? '#e3e9e8' : '#f6f8f7') : palette[pixels.value[i]]?.hex || '#ff00ff';
+    ctx.fillStyle = pixels.value[i] === -1
+      ? editorBackground.value === 'dark'
+        ? ((x + y) % 2 ? '#343c40' : '#485257')
+        : ((x + y) % 2 ? '#e3e9e8' : '#f6f8f7')
+      : palette[pixels.value[i]]?.hex || '#ff00ff';
     ctx.fillRect(x * size, y * size, size, size);
   }
   if (flashedColor.value !== null) {
@@ -212,7 +217,7 @@ function draw() {
     }
   }
   if (grid.value && size >= 2) {
-    ctx.strokeStyle = 'rgba(27, 43, 45, .17)'; ctx.lineWidth = 1; ctx.beginPath();
+    ctx.strokeStyle = editorBackground.value === 'dark' ? 'rgba(220, 232, 229, .25)' : 'rgba(27, 43, 45, .17)'; ctx.lineWidth = 1; ctx.beginPath();
     for (let x = 0; x <= width; x++) { ctx.moveTo(x * size + .5, 0); ctx.lineTo(x * size + .5, height * size); }
     for (let y = 0; y <= height; y++) { ctx.moveTo(0, y * size + .5); ctx.lineTo(width * size, y * size + .5); }
     ctx.stroke();
@@ -222,7 +227,8 @@ function draw() {
     ctx.strokeRect(hover.value.x * size + 1, hover.value.y * size + 1, size - 2, size - 2);
   }
 }
-watch([pixels, zoom, grid, hover, flashedColor], draw, { deep: true });
+watch([pixels, zoom, grid, hover, flashedColor, editorBackground], draw, { deep: true });
+watch(editorBackground, value => localStorage.setItem('annotationEditorBackground', value));
 
 function position(event: PointerEvent) {
   if (!canvas.value || !sample.value) return null;
@@ -559,6 +565,7 @@ onMounted(async () => {
   if (requestedId) { sampleSearch.value = requestedId; query.value = requestedId; }
   const storedSize = localStorage.getItem('annotationSizeFilter');
   if (storedSize === '24' || storedSize === '52' || storedSize === '78' || storedSize === '104') sizeFilter.value = storedSize;
+  if (localStorage.getItem('annotationEditorBackground') === 'dark') editorBackground.value = 'dark';
   listHeight.value = listElement.value?.clientHeight || 500;
   if (listElement.value) {
     listResizeObserver = new ResizeObserver(() => {
@@ -610,8 +617,8 @@ onUnmounted(() => { window.removeEventListener('keydown', keydown); window.remov
         <div class="boards">
           <section class="board source-board"><div class="board-title"><div><span class="section-number">01</span><h2>原图</h2></div><span>参考图像</span></div><div class="source-stage"><img :src="imageUrl(sample.id, 'sources')" alt="原图"></div><div class="board-caption">观察主体、轮廓与关键细节</div></section>
           <section class="board editor-board"><div class="board-title"><div><span class="section-number">02</span><h2>模型输出 · 可编辑</h2></div><span class="modified">{{ changedPixels }} 像素已修改</span></div>
-            <div ref="viewport" class="canvas-viewport" @wheel="wheel"><canvas ref="canvas" class="pixel-canvas" :class="{ panning: spaceHeld }" aria-label="可编辑像素画布" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="pointerCancel" @pointerleave="hover = null" @contextmenu.prevent></canvas></div>
-            <div class="canvas-footer"><span>{{ hover ? `(${hover.x}, ${hover.y})` : '移动鼠标查看坐标' }}</span><div><button title="缩小" @click="changeZoom(-1)">−</button><span>{{ zoom }}×</span><button title="放大" @click="changeZoom(1)">＋</button></div><label><input v-model="grid" type="checkbox"> 网格</label></div>
+            <div ref="viewport" class="canvas-viewport" :class="{ 'dark-background': editorBackground === 'dark' }" @wheel="wheel"><canvas ref="canvas" class="pixel-canvas" :class="{ panning: spaceHeld }" aria-label="可编辑像素画布" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="pointerCancel" @pointerleave="hover = null" @contextmenu.prevent></canvas></div>
+            <div class="canvas-footer"><span>{{ hover ? `(${hover.x}, ${hover.y})` : '移动鼠标查看坐标' }}</span><div><button title="缩小" @click="changeZoom(-1)">−</button><span>{{ zoom }}×</span><button title="放大" @click="changeZoom(1)">＋</button></div><div class="background-switch" role="group" aria-label="编辑背景"><span>背景</span><button type="button" :class="{ active: editorBackground === 'light' }" :aria-pressed="editorBackground === 'light'" @click="editorBackground = 'light'">浅色</button><button type="button" :class="{ active: editorBackground === 'dark' }" :aria-pressed="editorBackground === 'dark'" @click="editorBackground = 'dark'">深色</button></div><label><input v-model="grid" type="checkbox"> 网格</label></div>
           </section>
         </div>
         <div class="action-bar"><div class="action-hint">{{ dirty ? '当前修改尚未保存' : '当前无未保存修改' }} <span>· 空格拖动画布，滚轮缩放</span></div><div class="action-buttons"><button class="quiet" @click="nextSample()">跳过 / 下一张 <kbd>N</kbd></button><button class="quiet" :disabled="busy" @click="save()">保存 <kbd>S</kbd></button><button class="secondary" :disabled="busy" @click="saveAndNext()">保存并下一张</button><button class="primary" :disabled="busy" @click="acceptAndNext()">无需修改，送审核 <kbd>A</kbd></button></div></div>
@@ -655,6 +662,13 @@ onUnmounted(() => { window.removeEventListener('keydown', keydown); window.remov
 </style>
 <style scoped>
 @media(max-width:650px){.boards{height:auto}.board{min-height:0}.source-stage{min-height:230px}.canvas-viewport{min-height:380px}.source-board{height:330px}.editor-board{height:490px}}
+.canvas-viewport.dark-background{background-color:#343c40;background-image:linear-gradient(45deg,#485257 25%,transparent 25%),linear-gradient(-45deg,#485257 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#485257 75%),linear-gradient(-45deg,transparent 75%,#485257 75%)}
+.editor-board .canvas-footer{height:auto;min-height:43px;gap:9px;flex-wrap:wrap;padding-top:7px;padding-bottom:7px}
+.background-switch{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.background-switch>span{margin-right:2px}
+.background-switch button{width:auto;height:25px;padding:0 7px;border:1px solid #d5dfda;background:#f7f9f8;color:#536862;font-size:11px}
+.background-switch button.active{border-color:#2a635b;background:#e6f2ec;color:#20554c;font-weight:700}
+.background-switch button:focus-visible{outline:2px solid #e96f43;outline-offset:2px}
 .search-icon{position:absolute;left:11px;top:10px;width:16px;height:16px;color:#899896;pointer-events:none}
 .size-filter{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;margin:0 14px 12px}.size-filter button{min-width:0;height:30px;padding:0 2px;border:1px solid #e3ebe7;border-radius:7px;background:#f7f9f8;color:#62736e;font-size:11px;font-weight:650}.size-filter button span{font-size:9px;margin-left:1px;font-weight:500}.size-filter button:hover{border-color:#9bbab0}.size-filter button.active{border-color:#276458;background:#e8f2ed;color:#235c50}.size-filter button:disabled{cursor:wait;opacity:.65}.size-filter button:focus-visible{outline:2px solid #e96f43;outline-offset:2px}@media(max-width:650px){.size-filter{margin:0 13px 10px}}
 .sample-row{height:62px;padding:7px 8px;gap:6px}
