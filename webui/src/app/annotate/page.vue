@@ -107,6 +107,31 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+async function loadSample(id: string): Promise<Sample> {
+  const response = await fetch(`/api/annotation/samples/${encodeURIComponent(id)}?format=binary`);
+  if (!response.ok) {
+    const data = await response.json();
+    throw new Error(data.error || '读取样本失败');
+  }
+  const buffer = await response.arrayBuffer();
+  const view = new DataView(buffer);
+  if (buffer.byteLength < 16 || view.getUint32(0, false) !== 0x5058414e || view.getUint8(4) !== 1) {
+    throw new Error('样本数据格式无效');
+  }
+  const metadataLength = view.getUint32(8, true);
+  const count = view.getUint32(12, true);
+  const corrected = Boolean(view.getUint8(5) & 1);
+  const expectedLength = 16 + metadataLength + count * 2 * (corrected ? 2 : 1);
+  if (expectedLength !== buffer.byteLength) throw new Error('样本数据长度无效');
+  const metadata = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 16, metadataLength))) as Omit<Sample, 'indices' | 'corrected_indices'>;
+  if (count !== metadata.width * metadata.height) throw new Error('样本像素数量无效');
+  const indices = Array.from({ length: count }, (_, index) => view.getInt16(16 + metadataLength + index * 2, true));
+  const corrected_indices = corrected
+    ? Array.from({ length: count }, (_, index) => view.getInt16(16 + metadataLength + count * 2 + index * 2, true))
+    : undefined;
+  return { ...metadata, indices, ...(corrected_indices ? { corrected_indices } : {}) };
+}
+
 async function loadPage(page: number) {
   if (loadedPages.has(page) || loadingPages.has(page)) return;
   loadingPages.add(page);
@@ -168,7 +193,7 @@ async function openSample(id: string, force = false, index = -1) {
   if (activePointerId !== null) finishStroke(true);
   error.value = ''; notice.value = '';
   try {
-    const loaded = await request<Sample>(`/api/annotation/samples/${encodeURIComponent(id)}`);
+    const loaded = await loadSample(id);
     sample.value = loaded;
     selectedIndex.value = index;
     pixels.value = [...(loaded.corrected_indices || loaded.indices)];
@@ -448,9 +473,16 @@ async function save(accept = false): Promise<boolean> {
     const id = sample.value.id;
     const wasRejected = sample.value.status === 'unqualified';
     const saved = accept ? [...sample.value.indices] : [...pixels.value];
+    const payload = new ArrayBuffer(12 + saved.length * 2);
+    const view = new DataView(payload);
+    view.setUint32(0, 0x50585356, false); // PXSV
+    view.setUint8(4, 1);
+    view.setUint8(5, accept ? 1 : 0);
+    view.setUint32(8, saved.length * 2, true);
+    saved.forEach((value, index) => view.setInt16(12 + index * 2, value, true));
     const result = await request<{ changed_pixels: number }>(`/api/annotation/samples/${encodeURIComponent(id)}/save`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ accept, indices: saved }),
+      method: 'POST', headers: { 'Content-Type': 'application/vnd.pixel-review.save' },
+      body: payload,
     });
     await refreshSamples();
     // Saving a rejected sample removes it from the priority section. Start
@@ -503,26 +535,32 @@ async function updateStatus(nextStatus: 'pending' | 'human_edited') {
 async function saveAndNext() { if (busy.value || !sample.value) return; if (await save()) await nextSample(true); }
 async function acceptAndNext() { if (busy.value || !sample.value) return; if (await save(true)) await nextSample(true); }
 
-function fileData(file: File): Promise<string> {
-  return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(file); });
-}
-function onSource(event: Event) { sourceFile.value = (event.target as HTMLInputElement).files?.[0] || null; if (sourceFile.value && !importId.value) importId.value = sourceFile.value.name.replace(/\.png$/i, ''); }
+function onSource(event: Event) { sourceFile.value = (event.target as HTMLInputElement).files?.[0] || null; }
 function onPrediction(event: Event) { predictionFile.value = (event.target as HTMLInputElement).files?.[0] || null; }
 async function importPair() {
-  if (!sourceFile.value || !predictionFile.value) { error.value = '请选择原图和预测 PNG'; return; }
+  if (!sourceFile.value) { error.value = '请选择原图 PNG'; return; }
   busy.value = true; error.value = '';
   try {
-    const [source, prediction] = await Promise.all([fileData(sourceFile.value), fileData(predictionFile.value)]);
-    const result = await request<{ id: string }>('/api/annotation/samples', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: importId.value, model_version: modelVersion.value, source, prediction }),
+    const metadata = new TextEncoder().encode(JSON.stringify({ id: importId.value, model_version: modelVersion.value }));
+    const header = new ArrayBuffer(20);
+    const view = new DataView(header);
+    view.setUint32(0, 0x5058494d, false); // PXIM
+    view.setUint8(4, 1);
+    view.setUint32(8, metadata.length, true);
+    view.setUint32(12, sourceFile.value.size, true);
+    view.setUint32(16, predictionFile.value?.size || 0, true);
+    const result = await request<{ id: string; base_id?: string; ids?: string[] }>('/api/annotation/samples', {
+      method: 'POST', headers: { 'Content-Type': 'application/vnd.pixel-review.import' },
+      body: new Blob([header, metadata, sourceFile.value, ...(predictionFile.value ? [predictionFile.value] : [])]),
     });
-    sampleSearch.value = result.id; query.value = result.id;
+    const searchId = result.base_id || result.id;
+    sampleSearch.value = searchId; query.value = searchId;
     if (listElement.value) listElement.value.scrollTop = 0;
     listScrollTop.value = 0;
     await refreshSamples(true); importOpen.value = false; sourceFile.value = null; predictionFile.value = null; importId.value = '';
     busy.value = false;
     await openSample(result.id, true, 0);
+    if (result.ids) notice.value = `已生成 ${result.ids.length} 种尺寸并加入样本队列末尾`;
   } catch (cause) { error.value = message(cause); }
   finally { busy.value = false; }
 }
@@ -596,7 +634,7 @@ onUnmounted(() => { window.removeEventListener('keydown', keydown); window.remov
         <div class="rail-heading"><div><span class="eyebrow">QUEUE</span><h2>样本队列</h2></div><span class="count">{{ total.toLocaleString() }}</span></div>
         <label class="search"><svg class="search-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.7"/><path d="m13 13 4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><input v-model="sampleSearch" placeholder="搜索样本 ID" aria-label="搜索样本 ID"></label>
         <div class="size-filter" role="group" aria-label="按像素尺寸筛选"><button v-for="option in sizeOptions" :key="option.value" type="button" :disabled="filterBusy" :class="{ active: sizeFilter === option.value }" :aria-pressed="sizeFilter === option.value" @click="setSizeFilter(option.value)">{{ option.label }}<span v-if="option.value">px</span></button></div>
-        <div v-if="!datasetTotal" class="empty-rail">还没有样本。<br>点击右上角导入一组原图与预测图。</div>
+        <div v-if="!datasetTotal" class="empty-rail">还没有样本。<br>点击右上角导入原图。</div>
         <div v-else-if="!total" class="empty-rail">没有匹配的样本。</div>
         <div ref="listElement" class="sample-list" @scroll="onListScroll">
           <div :style="{ height: `${visibleStart * ROW_HEIGHT}px` }"></div>
@@ -623,7 +661,7 @@ onUnmounted(() => { window.removeEventListener('keydown', keydown); window.remov
         </div>
         <div class="action-bar"><div class="action-hint">{{ dirty ? '当前修改尚未保存' : '当前无未保存修改' }} <span>· 空格拖动画布，滚轮缩放</span></div><div class="action-buttons"><button class="quiet" @click="nextSample()">跳过 / 下一张 <kbd>N</kbd></button><button class="quiet" :disabled="busy" @click="save()">保存 <kbd>S</kbd></button><button class="secondary" :disabled="busy" @click="saveAndNext()">保存并下一张</button><button class="primary" :disabled="busy" @click="acceptAndNext()">无需修改，送审核 <kbd>A</kbd></button></div></div>
       </main>
-      <main v-else class="main-area welcome"><div class="welcome-icon">▦</div><h1>{{ filterBusy ? '正在载入样本' : datasetTotal ? '当前筛选没有样本' : '开始构建纠错数据集' }}</h1><p>{{ filterBusy ? '正在读取这个尺寸的样本队列。' : datasetTotal ? '试试其他尺寸，或清除搜索条件。' : '导入一张原图和对应的逻辑像素预测 PNG，随后即可逐格修改并保存训练数据。' }}</p><button v-if="!datasetTotal" class="primary" @click="importOpen = true">导入第一条样本</button></main>
+      <main v-else class="main-area welcome"><div class="welcome-icon">▦</div><h1>{{ filterBusy ? '正在载入样本' : datasetTotal ? '当前筛选没有样本' : '开始构建纠错数据集' }}</h1><p>{{ filterBusy ? '正在读取这个尺寸的样本队列。' : datasetTotal ? '试试其他尺寸，或清除搜索条件。' : '导入原图即可自动生成四种尺寸的预测，随后逐格修改并保存训练数据。' }}</p><button v-if="!datasetTotal" class="primary" @click="importOpen = true">导入第一条样本</button></main>
 
       <aside class="tools-rail" :class="{ disabled: !sample }"><div class="tool-section"><span class="eyebrow">TOOLS</span><h2>编辑工具</h2><div class="tool-list"><button :class="{ selected: tool === 'pencil' }" @click="tool = 'pencil'"><svg class="tool-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.2 2.8a2.1 2.1 0 0 1 3 3L6.5 16.5l-4 1 1-4L14.2 2.8z"/><path d="m12 5 3 3"/></svg> 铅笔 <kbd>B</kbd></button><button :class="{ selected: tool === 'eraser' }" @click="tool = 'eraser'"><svg class="tool-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 16.5-3.5-3.5a1.8 1.8 0 0 1 0-2.5l7.5-7.5a1.8 1.8 0 0 1 2.5 0l4.5 4.5a1.8 1.8 0 0 1 0 2.5L11.5 16.5"/><path d="M17.5 16.5H6"/><path d="m5 10 6.5 6.5"/></svg> 橡皮 <kbd>E</kbd></button><button :class="{ selected: tool === 'picker' }" @click="tool = 'picker'"><svg class="tool-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m11 5.5 1.8-1.8a2 2 0 1 1 2.8 2.8L13.8 8.3"/><path d="m12 6.5-6.8 6.8c-.3.3-.5.7-.6 1.1L4 16.5l2.1-.6c.4-.1.8-.3 1.1-.6l6.8-6.8"/><path d="m9.5 9 1.5 1.5"/></svg> 取色 <kbd>I</kbd></button><button :class="{ selected: tool === 'line' }" @click="tool = 'line'"><svg class="tool-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4.5" y1="15.5" x2="15.5" y2="4.5"/><circle cx="4.5" cy="15.5" r="1.8" fill="currentColor"/><circle cx="15.5" cy="4.5" r="1.8" fill="currentColor"/></svg> 直线 <kbd>L</kbd></button><button :class="{ selected: tool === 'rectangle' }" @click="tool = 'rectangle'"><svg class="tool-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2.5"/></svg> 矩形 <kbd>R</kbd></button><button :class="{ selected: tool === 'fill' }" @click="tool = 'fill'"><svg class="tool-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m14 8.5-5.5-5.5-6 6a1.8 1.8 0 0 0 0 2.5l4 4a1.8 1.8 0 0 0 2.5 0L14 8.5z"/><path d="M4 3 7.5 6.5"/><path d="M2.5 9.5h10"/><path d="M16.8 14.2c0 1.2-.9 2-2 2s-2-.8-2-2c0-1.2 2-3.4 2-3.4s2 2.2 2 3.4z" fill="currentColor" stroke="none"/></svg> 填充 <kbd>F</kbd></button><button class="background-tool" :disabled="!sample || busy" title="移除与边缘主色连通的背景像素" @click="removeBackground"><svg class="tool-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m13 4 3 3L6 17l-3 1 1-3L13 4z"/><path d="m11 6 3 3"/><path d="M10 2v2M18 10h-2M15 2.5l1.5 1.5M3 8.5l1.5 1.5"/></svg> 一键去背景 <kbd>G</kbd></button><button class="background-tool" :disabled="!sample || busy" title="识别单色主体，将轮廓彩边变为黑色描边并清除外层杂色" @click="cleanEdges"><svg class="tool-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m10 2.2 2.2 4.6 5 .6-3.8 3.5 1.1 5-4.5-2.5-4.5 2.5 1.1-5-3.8-3.5 5-.6L10 2.2z" stroke-width="1.8"/><circle cx="16" cy="3.5" r="1.2" fill="currentColor"/></svg> 净化彩边 <kbd>J</kbd></button></div><div class="history"><button :disabled="!undoStack.length" @click="undo()"><svg class="btn-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h8a4.5 4.5 0 0 1 4.5 4.5v0a4.5 4.5 0 0 1-4.5 4.5H8"/><path d="m7.5 4.5-3.5 3.5 3.5 3.5"/></svg>撤销</button><button :disabled="!redoStack.length" @click="redo()"><svg class="btn-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 8H8a4.5 4.5 0 0 0-4.5 4.5v0A4.5 4.5 0 0 0 8 17h4"/><path d="m12.5 4.5 3.5 3.5-3.5 3.5"/></svg>重做</button></div><div class="history"><button :disabled="!sample" @click="reset()"><svg class="btn-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 10a7.5 7.5 0 1 0 2.2-5.3L2.5 7"/><path d="M2.5 2.5V7H7"/></svg>重置预测</button><button :disabled="!sample" @click="clear()"><svg class="btn-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5.5h14M7 5.5V3.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M15 5.5v10.5a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 5 16V5.5"/><path d="M8 9v5M12 9v5"/></svg>清空画布</button></div></div>
         <div class="tool-section usage-section"><span class="eyebrow">CURRENT IMAGE · {{ colorUsage.length }}</span><h2>画布用色</h2><p class="usage-help">按数量排序 · 点击取色并闪烁定位</p><div v-if="sample && colorUsage.length" class="usage-list"><button v-for="color in colorUsage" :key="color.index" class="usage-row" :class="{ active: selectedColor === color.index && tool === 'pencil' }" :title="`${color.code} · ${color.hex} · index ${color.index}`" :aria-label="`取色 ${color.code}，${color.count} 格`" @click="pickUsedColor(color.index)"><span class="usage-swatch" :style="{ background: color.hex }"></span><span class="usage-code">{{ color.code }}<small>#{{ color.index }}</small></span><span class="usage-count">{{ color.count }} <small>格</small></span></button></div><p v-else class="usage-empty">画布暂无颜色</p></div>
@@ -631,7 +669,7 @@ onUnmounted(() => { window.removeEventListener('keydown', keydown); window.remov
       </aside>
     </div>
 
-    <div v-if="importOpen" class="modal-backdrop" @click.self="importOpen = false"><div class="import-modal" role="dialog" aria-modal="true" aria-label="导入样本"><button class="close" @click="importOpen = false">×</button><span class="eyebrow">NEW SAMPLE</span><h2>导入样本</h2><p>原图用于参考；预测图必须是逻辑像素尺寸的 PNG，导入时会映射到 MARD 色板。</p><label>样本 ID<input v-model="importId" placeholder="例如 000001"></label><label>模型版本<input v-model="modelVersion" placeholder="例如 v0.1"></label><div class="file-row"><label>原图 PNG<input type="file" accept="image/png" @change="onSource"></label><label>预测 PNG<input type="file" accept="image/png" @change="onPrediction"></label></div><button class="primary" :disabled="busy" @click="importPair()">{{ busy ? '导入中…' : '导入并开始标注' }}</button></div></div>
+    <div v-if="importOpen" class="modal-backdrop" @click.self="importOpen = false"><div class="import-modal" role="dialog" aria-modal="true" aria-label="导入样本"><button class="close" @click="importOpen = false">×</button><span class="eyebrow">NEW SAMPLE</span><h2>导入样本</h2><p>只上传原图时，自动调用 Python Test PRO 生成 24、52、78、104 四种尺寸，并加入队列末尾；也可以上传现成的逻辑像素预测 PNG。</p><label>样本 ID（可选）<input v-model="importId" placeholder="留空自动使用下一个编号"></label><label>模型版本<input v-model="modelVersion" placeholder="例如 v0.1"></label><div class="file-row"><label>原图 PNG<input type="file" accept="image/png" @change="onSource"></label><label>预测 PNG（可选）<input type="file" accept="image/png" @change="onPrediction"></label></div><button class="primary" :disabled="busy" @click="importPair()">{{ busy ? '正在生成并导入…' : '导入并开始标注' }}</button></div></div>
   </div>
 </template>
 

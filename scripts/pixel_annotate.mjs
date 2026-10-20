@@ -1,15 +1,64 @@
 #!/usr/bin/env node
 
-import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile as fsReadFile, readdir as fsReaddir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
+import { deflateSync, inflateSync } from 'node:zlib';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 const defaultDataRoot = path.join(projectRoot, 'webui/data');
 const mappingFile = path.join(projectRoot, 'webui/src/app/colorSystemMapping.json');
+let activeDataRoot = defaultDataRoot;
+let annotationDb;
+
+function database() {
+  if (!annotationDb) {
+    annotationDb = new DatabaseSync(path.join(activeDataRoot, 'annotation.sqlite3'));
+    annotationDb.exec('PRAGMA busy_timeout = 5000');
+    if (!annotationDb.prepare('PRAGMA table_info(samples)').all().some(column => column.name === 'queue_order')) {
+      annotationDb.exec('ALTER TABLE samples ADD COLUMN queue_order INTEGER NOT NULL DEFAULT 0');
+    }
+  }
+  return annotationDb;
+}
+
+function storedPath(file) {
+  const relative = path.relative(activeDataRoot, file);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  const [kind, name] = relative.split(path.sep);
+  if (!['indices', 'meta', 'predictions', 'corrected', 'edit_masks'].includes(kind) || !name) return null;
+  return { kind, id: name.replace(/\.(json|png)$/, '') };
+}
+
+function missing(file) {
+  const error = new Error(`ENOENT: ${file}`);
+  error.code = 'ENOENT';
+  throw error;
+}
+
+async function readFile(file, encoding) {
+  const stored = storedPath(file);
+  if (!stored) return fsReadFile(file, encoding);
+  const row = stored.kind === 'indices'
+    ? database().prepare('SELECT record AS content FROM samples WHERE id=?').get(stored.id)
+    : stored.kind === 'meta'
+      ? database().prepare('SELECT json AS content FROM metadata WHERE id=?').get(stored.id)
+      : database().prepare('SELECT png AS content FROM images WHERE id=? AND kind=?').get(stored.id, stored.kind);
+  if (!row) missing(file);
+  const content = stored.kind === 'indices' ? inflateSync(row.content) : row.content;
+  return encoding ? content.toString(encoding) : Buffer.from(content);
+}
+
+async function readdir(folder) {
+  if (path.resolve(folder) === path.join(activeDataRoot, 'indices')) {
+    return database().prepare('SELECT id FROM samples ORDER BY sort_key').all().map(row => `${row.id}.json`);
+  }
+  return fsReaddir(folder);
+}
 
 // Import pngjs
 let PNG;
@@ -84,6 +133,41 @@ function colorDesc(index) {
 }
 
 async function atomicWrite(file, content) {
+  const stored = storedPath(file);
+  if (stored) {
+    const db = database();
+    if (stored.kind === 'indices') {
+      const record = JSON.parse(content);
+      const status = record.status || (record.corrected_indices ? 'pending' : 'unmodified');
+      const history = Array.isArray(record.review_history) && record.review_history.length
+        ? record.review_history
+        : ['qualified', 'unqualified'].includes(status)
+          ? [{ from: null, to: status, reason: record.review_reason || '', timestamp: record.reviewed_at || null }]
+          : [];
+      const sortKey = record.id.replace(/\d+/g, number => number.padStart(12, '0'));
+      db.prepare(`INSERT INTO samples (id, sort_key, width, height, model_version, status,
+        changed_pixels, reviewed_at, review_reason, review_history, history_count,
+        has_corrected, has_meta, record)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT has_meta FROM samples WHERE id=?), 0), ?)
+        ON CONFLICT(id) DO UPDATE SET width=excluded.width, height=excluded.height,
+        model_version=excluded.model_version, status=excluded.status, changed_pixels=excluded.changed_pixels,
+        reviewed_at=excluded.reviewed_at, review_reason=excluded.review_reason,
+        review_history=excluded.review_history, history_count=excluded.history_count,
+        has_corrected=excluded.has_corrected, record=excluded.record`).run(
+          record.id, sortKey, record.width, record.height, record.model_version, status,
+          record.changed_pixels || 0, record.reviewed_at || null, record.review_reason || null,
+          JSON.stringify(history), history.length, Number(Boolean(record.corrected_indices)),
+          record.id, deflateSync(JSON.stringify(record), { level: 1 }));
+    } else if (stored.kind === 'meta') {
+      db.prepare('INSERT INTO metadata (id,json) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET json=excluded.json')
+        .run(stored.id, String(content));
+      db.prepare('UPDATE samples SET has_meta=1 WHERE id=?').run(stored.id);
+    } else {
+      db.prepare('INSERT INTO images (id,kind,png) VALUES (?,?,?) ON CONFLICT(id,kind) DO UPDATE SET png=excluded.png')
+        .run(stored.id, stored.kind, content);
+    }
+    return;
+  }
   const temporary = `${file}.${process.pid}.tmp`;
   await writeFile(temporary, content);
   await rename(temporary, file);
@@ -490,6 +574,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const command = args._[0] || 'help';
   const dataRoot = args['data-dir'] || defaultDataRoot;
+  activeDataRoot = path.resolve(dataRoot);
 
   try {
     if (command === 'help') {
@@ -500,6 +585,10 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
   node scripts/pixel_annotate.mjs <command> [options]
 
 常用命令:
+  profile-ellipse <序号> 添加圆形或椭圆细节（512 坐标）
+                       --rect x1,y1,x2,y2 --color <索引> --outline <索引> --width 4
+  profile-mirror <序号> 镜像指定尺寸手工稿的左半边到右半边
+                       --size 24 --keep x1,y1,x2,y2（可选保留区域，逻辑像素坐标）
   profile-stroke <序号>  追加细线（512 坐标，自动适配四种尺寸，裁切到主体内）
                        --points 'x,y;x,y;...' --color <索引> --width 4
   profile-grid <序号>   保存指定尺寸的手工像素稿
@@ -536,7 +625,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
                        --remove-bg (自动去边缘背景)
                        --clean-fringe (单色主体彩边净化为纯黑描边并去杂色)
 
-  save <id>            提交保存纠错标注 (生成 corrected.png, edit_mask.png, meta.json)
+  save <id>            提交保存纠错标注 (纠错图、mask、元数据写入 SQLite)
                        --accept (直接通过，0 处修改)
                        --status pending|human_edited (默认 pending)
 
@@ -578,6 +667,37 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
   node scripts/pixel_annotate.mjs recipe-preview 122
   node scripts/pixel_annotate.mjs recipe-apply 122
 `);
+      return;
+    }
+
+    if (command === 'profile-ellipse') {
+      const id = args._[1], color = Number(args.color), width = Number(args.width ?? 4);
+      const rect = String(args.rect || '').split(',').map(Number);
+      const outline = args.outline === undefined ? color : Number(args.outline);
+      if (!/^\d+$/.test(id || '') || args.color === undefined || ![color, outline].every(n => Number.isInteger(n) && n >= 0 && n < palette.length) || !Number.isFinite(width) || width <= 0 || width > 512 || rect.length !== 4 || rect.some(n => !Number.isFinite(n) || n < 0 || n > 512) || rect[0] > rect[2] || rect[1] > rect[3]) throw new Error('需要有效的椭圆矩形、颜色及线宽');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      profile.ellipses = [...(profile.ellipses || []), { rect, color, outline, width }];
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已追加 ${id} 椭圆，请重新预览。`);
+      return;
+    }
+
+    if (command === 'profile-mirror') {
+      const id = args._[1], size = Number(args.size);
+      if (!/^\d+$/.test(id || '') || ![24, 52, 78, 104].includes(size)) throw new Error('需要图片序号及 --size');
+      const keep = args.keep === undefined ? null : String(args.keep).split(',').map(Number);
+      if (keep && (keep.length !== 4 || !keep.every(n => Number.isInteger(n) && n >= 0 && n < size) || keep[0] > keep[2] || keep[1] > keep[3])) throw new Error('--keep 需要有效的逻辑像素矩形');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      const grid = profile.sizes?.[size]?.grid;
+      if (!grid || grid.length !== size || grid.some(row => row.length !== size)) throw new Error('请先用 profile-grid 保存该尺寸像素稿');
+      for (let y = 0; y < size; y++) for (let x = size / 2; x < size; x++) {
+        if (keep && x >= keep[0] && x <= keep[2] && y >= keep[1] && y <= keep[3]) continue;
+        grid[y][x] = grid[y][size - 1 - x];
+      }
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已镜像 ${id} 的 ${size} 像素稿，请重新预览。`);
       return;
     }
 
@@ -677,45 +797,34 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
     }
 
     if (command === 'list') {
-      const indicesDir = path.join(dataRoot, 'indices');
-      const allFiles = (await readdir(indicesDir)).filter(f => f.endsWith('.json'));
-      const allIds = allFiles.map(f => f.slice(0, -5)).sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
-
       const sizeFilter = args.size ? String(args.size) : '';
       const statusFilter = args.status ? String(args.status) : '';
       const search = (args.search || '').trim().toLowerCase();
       const limit = Number(args.limit || 20);
       const offset = Number(args.offset || 0);
+      const db = database();
+      const counts = db.prepare(`SELECT count(*) AS total,
+        sum(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
+        sum(CASE WHEN status='human_edited' THEN 1 ELSE 0 END) AS edited,
+        sum(CASE WHEN status='qualified' THEN 1 ELSE 0 END) AS accepted FROM samples`).get();
+      const filters = [];
+      const values = [];
+      if (sizeFilter) { filters.push('width = ?'); values.push(Number(sizeFilter)); }
+      if (statusFilter && statusFilter !== 'all') { filters.push('status = ?'); values.push(statusFilter); }
+      if (search) { filters.push('instr(lower(id), ?) > 0'); values.push(search); }
+      const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+      const matches = db.prepare(`SELECT count(*) AS total FROM samples ${where}`).get(...values).total;
+      const page = db.prepare(`SELECT id, width, height, status, changed_pixels, model_version
+        FROM samples ${where}
+        ORDER BY CASE WHEN status='unqualified' THEN 0 ELSE 1 END, queue_order, sort_key
+        LIMIT ? OFFSET ?`).all(...values, limit, offset);
 
-      const records = [];
-      let totalCompleted = 0;
-      let totalPending = 0;
-      let totalEdited = 0;
-      let totalAccepted = 0;
-
-      for (const id of allIds) {
-        const rec = JSON.parse(await readFile(path.join(indicesDir, `${id}.json`), 'utf8'));
-        const st = rec.status || (rec.corrected_indices ? 'pending' : 'unmodified');
-        if (st === 'pending') totalPending++;
-        else if (st === 'human_edited') totalEdited++;
-        else if (st === 'qualified') { totalAccepted++; totalCompleted++; }
-
-        if (sizeFilter && String(rec.width) !== sizeFilter) continue;
-        if (statusFilter && statusFilter !== 'all' && st !== statusFilter) continue;
-        if (search && !id.toLowerCase().includes(search)) continue;
-
-        records.push(rec);
-      }
-
-      console.log(`\n📊 数据集统计: 总样本: ${allIds.length} | 已完成: ${totalCompleted} (已改: ${totalEdited}, 通过: ${totalAccepted}) | 待审核: ${totalPending}`);
-      console.log(`🔍 筛选条件: 尺寸=${sizeFilter || '全部'}, 状态=${statusFilter || '全部'}, 匹配数=${records.length}\n`);
+      console.log(`\n📊 数据集统计: 总样本: ${counts.total} | 已完成: ${counts.accepted || 0} (已改: ${counts.edited || 0}, 通过: ${counts.accepted || 0}) | 待审核: ${counts.pending || 0}`);
+      console.log(`🔍 筛选条件: 尺寸=${sizeFilter || '全部'}, 状态=${statusFilter || '全部'}, 匹配数=${matches}\n`);
 
       console.log('序号'.padEnd(6) + '样本 ID'.padEnd(16) + '尺寸'.padEnd(12) + '状态'.padEnd(10) + '已修改像素'.padEnd(14) + '模型版本');
       console.log('-'.repeat(70));
 
-      // Prioritize rejected work before pagination, matching the web queue.
-      records.sort((a, b) => Number(b.status === 'unqualified') - Number(a.status === 'unqualified'));
-      const page = records.slice(offset, offset + limit);
       page.forEach((r, idx) => {
         const no = String(offset + idx + 1).padStart(4, '0');
         const stLabel = ({ unmodified: '未修改', pending: '待审核', human_edited: '已人工修改', qualified: '合格', unqualified: '不合格' })[r.status] || '未修改';
@@ -723,32 +832,21 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
           `${no}  ${r.id.padEnd(16)}${`${r.width}×${r.height}`.padEnd(12)}${stLabel.padEnd(10)}${String(r.changed_pixels || 0).padEnd(14)}${r.model_version || ''}`
         );
       });
-      if (records.length > offset + limit) {
-        console.log(`\n... 还有 ${records.length - offset - limit} 条样本未显示，使用 --offset ${offset + limit} 查看更多`);
+      if (matches > offset + limit) {
+        console.log(`\n... 还有 ${matches - offset - limit} 条样本未显示，使用 --offset ${offset + limit} 查看更多`);
       }
       return;
     }
 
     if (command === 'next') {
-      const indicesDir = path.join(dataRoot, 'indices');
-      const allFiles = (await readdir(indicesDir)).filter(f => f.endsWith('.json'));
-      const allIds = allFiles.map(f => f.slice(0, -5)).sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
       const sizeFilter = args.size ? String(args.size) : '';
-
-      let firstUnmodified = null;
-      for (const id of allIds) {
-        const rec = JSON.parse(await readFile(path.join(indicesDir, `${id}.json`), 'utf8'));
-        if (sizeFilter && String(rec.width) !== sizeFilter) continue;
-        if (rec.status === 'unqualified') {
-          console.log(id);
-          return;
-        }
-        if (!firstUnmodified && !rec.corrected_indices && (!rec.status || rec.status === 'unmodified')) {
-          firstUnmodified = id;
-        }
-      }
-      if (firstUnmodified) {
-        console.log(firstUnmodified);
+      const next = database().prepare(`SELECT id FROM samples
+        WHERE (status='unqualified' OR (status='unmodified' AND has_corrected=0))
+          AND (? = '' OR width = ?)
+        ORDER BY CASE WHEN status='unqualified' THEN 0 ELSE 1 END, queue_order, sort_key
+        LIMIT 1`).get(sizeFilter, Number(sizeFilter) || 0);
+      if (next) {
+        console.log(next.id);
         return;
       }
       console.error('没有找到符合条件的待审样本！');
@@ -1185,9 +1283,9 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       console.log(`\n💾 样本 ${id} 保存成功!`);
       console.log(`- 状态: ${rec.status}`);
       console.log(`- 修改像素: ${rec.changed_pixels} 格`);
-      console.log(`- 生成纠错图: webui/data/corrected/${id}.png`);
-      console.log(`- 生成编辑 Mask: webui/data/edit_masks/${id}.png`);
-      console.log(`- 生成元数据: webui/data/meta/${id}.json`);
+      console.log(`- 纠错图: SQLite images/corrected/${id}`);
+      console.log(`- 编辑 Mask: SQLite images/edit_masks/${id}`);
+      console.log(`- 元数据: SQLite metadata/${id}`);
       console.log(`- 预览图: ${previewPath}\n`);
       return;
     }

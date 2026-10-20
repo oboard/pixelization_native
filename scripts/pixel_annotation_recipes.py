@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
-import os
+import re
+import sqlite3
+import tempfile
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,7 +30,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "webui" / "data"
-REVIEWS = DATA / "reviews" / "recipes"
+REVIEWS = Path(tempfile.gettempdir()) / "pixel_annotation_reviews" / "recipes"
 PALETTE = list(json.loads((ROOT / "webui/src/app/colorSystemMapping.json").read_text()))
 SIZES = (24, 52, 78, 104)
 PROFILES = ROOT / 'scripts' / 'annotation_profiles'
@@ -734,6 +738,15 @@ def flat_classes(source: np.ndarray, size: int, profile: dict) -> np.ndarray:
         return grid.copy()
     prototypes = np.array(profile['rgb'], dtype=np.float32)
     labels = ((source.astype(np.float32)[:, :, None, :] - prototypes) ** 2).sum(3).argmin(2)
+    # Neutral antialias pixels on black/white edges must not become a
+    # saturated accent merely because its RGB distance is smaller.
+    neutral_classes = np.flatnonzero(np.ptp(prototypes, axis=1) < 10)
+    if len(neutral_classes) >= 2:
+        neutral_pixels = np.ptp(source.astype(np.float32), axis=2) < 10
+        values = source[neutral_pixels].astype(np.float32)
+        if len(values):
+            nearest = ((values[:, None, :] - prototypes[neutral_classes]) ** 2).sum(2).argmin(1)
+            labels[neutral_pixels] = neutral_classes[nearest]
     colors = list(profile['indices'])
     if profile.get('enclosed_white') is not None:
         white = Image.fromarray((labels == 0).astype(np.uint8) * 255, 'L').copy()
@@ -774,6 +787,26 @@ def flat_classes(source: np.ndarray, size: int, profile: dict) -> np.ndarray:
                    min(size - 1, round(y * (size - 1) / 511))) for x, y in stroke['points']]
         ImageDraw.Draw(mask).line(points, fill=255, width=max(1, round(stroke['width'] * size / 512)))
         result[(np.asarray(mask) > 0) & (result >= 0)] = stroke['color']
+    if profile.get('ellipses'):
+        art = Image.fromarray(result.astype(np.int32), 'I')
+        draw = ImageDraw.Draw(art)
+        for ellipse in profile['ellipses']:
+            box = [int(np.floor(v * size / 512)) if i < 2 else int(np.ceil(v * size / 512)) - 1
+                   for i, v in enumerate(ellipse['rect'])]
+            box[2] = max(box[0], box[2])
+            box[3] = max(box[1], box[3])
+            # A three-cell circle becomes a cross. Use an even diameter for
+            # tiny filled circles so eyes have rounded corners and a center.
+            circle_like = abs((ellipse['rect'][2] - ellipse['rect'][0]) -
+                              (ellipse['rect'][3] - ellipse['rect'][1])) <= 2
+            if ellipse['color'] == ellipse['outline'] and circle_like:
+                for lo, hi in ((0, 2), (1, 3)):
+                    diameter = box[hi] - box[lo] + 1
+                    if diameter in (3, 5):
+                        box[hi] = min(size - 1, box[hi] + 1)
+            draw.ellipse(box, fill=ellipse['color'], outline=ellipse['outline'],
+                         width=max(1, round(ellipse['width'] * size / 512)))
+        result = np.asarray(art, dtype=np.int16).copy()
     return result
 
 
@@ -789,10 +822,21 @@ def render(indices: np.ndarray) -> Image.Image:
     return Image.fromarray(rgba, "RGBA")
 
 
-def atomic_json(path: Path, value: dict) -> None:
-    temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
-    temporary.replace(path)
+def database():
+    connection = sqlite3.connect(DATA / "annotation.sqlite3")
+    connection.execute("PRAGMA busy_timeout=5000")
+    return connection
+
+
+def image_bytes(image: Image.Image) -> bytes:
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
+def asset(connection, name: str) -> bytes | None:
+    row = connection.execute("SELECT content FROM assets WHERE path=?", (name,)).fetchone()
+    return row[0] if row else None
 
 
 def recipe_fingerprint(recipe_id: int, sizes: tuple[int, ...]) -> str:
@@ -823,25 +867,34 @@ def preview(recipe_id: int, sizes: tuple[int, ...]) -> Path:
         draw.text((column * 300 + 10, 310), f"{recipe_id}_{size}", fill="#24413c")
     output = REVIEWS / f"{recipe_id}-{'-'.join(map(str, sizes))}.png"
     canvas.save(output)
-    atomic_json(output.with_suffix(".json"), {
+    manifest = {
         "recipe_id": recipe_id,
         "sizes": list(sizes),
         "fingerprint": recipe_fingerprint(recipe_id, sizes),
-    })
+    }
+    with database() as connection:
+        connection.execute("INSERT OR REPLACE INTO assets VALUES (?, ?)",
+                           (f"reviews/recipes/{output.name}", output.read_bytes()))
+        connection.execute("INSERT OR REPLACE INTO assets VALUES (?, ?)",
+                           (f"reviews/recipes/{output.stem}.json", json.dumps(manifest).encode()))
     return output
 
 
 def apply(recipe_id: int, sizes: tuple[int, ...], force: bool) -> None:
     preview_file = REVIEWS / f"{recipe_id}-{'-'.join(map(str, sizes))}.png"
-    if not preview_file.exists():
+    connection = database()
+    prefix = f"reviews/recipes/{preview_file.stem}"
+    if asset(connection, prefix + ".png") is None:
         raise ValueError(f"Review preview first: {preview_file}")
-    manifest = preview_file.with_suffix(".json")
-    if not manifest.exists() or json.loads(manifest.read_text()).get("fingerprint") != recipe_fingerprint(recipe_id, sizes):
+    manifest = asset(connection, prefix + ".json")
+    if manifest is None or json.loads(manifest).get("fingerprint") != recipe_fingerprint(recipe_id, sizes):
         raise ValueError(f"Preview is stale; regenerate and review: {preview_file}")
     for size in sizes:
         sample_id = f"{recipe_id}_{size}"
-        record_file = DATA / "indices" / f"{sample_id}.json"
-        record = json.loads(record_file.read_text())
+        row = connection.execute("SELECT record FROM samples WHERE id=?", (sample_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Missing sample: {sample_id}")
+        record = json.loads(zlib.decompress(row[0]))
         if not force and (record.get("status", "unmodified") != "unmodified" or "corrected_indices" in record):
             print(f"skip {sample_id}: existing annotation or review state")
             continue
@@ -863,11 +916,11 @@ def apply(recipe_id: int, sizes: tuple[int, ...], force: bool) -> None:
         if len(flat) != len(record["indices"]):
             raise ValueError(f"Dimension mismatch: {sample_id}")
         changed = np.asarray(flat) != np.asarray(record["indices"])
-        render(indices).save(DATA / "corrected" / f"{sample_id}.png")
+        corrected_png = image_bytes(render(indices))
         mask = np.zeros((size, size, 4), dtype=np.uint8)
         mask[:, :, :3] = changed.reshape(size, size, 1).astype(np.uint8) * 255
         mask[:, :, 3] = 255
-        Image.fromarray(mask, "RGBA").save(DATA / "edit_masks" / f"{sample_id}.png")
+        mask_png = image_bytes(Image.fromarray(mask, "RGBA"))
         metadata = {
             "id": sample_id,
             "source": f"sources/{sample_id}.png",
@@ -883,15 +936,25 @@ def apply(recipe_id: int, sizes: tuple[int, ...], force: bool) -> None:
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "annotation_source": "ai",
         }
-        atomic_json(DATA / "meta" / f"{sample_id}.json", metadata)
         record["corrected_indices"] = flat
         record["changed_pixels"] = metadata["changed_pixels"]
         record["status"] = "pending"
         record["annotation_source"] = "ai"
         record.pop("reviewed_at", None)
         record.pop("review_reason", None)
-        atomic_json(record_file, record)
+        history = record.get("review_history") or []
+        with connection:
+            connection.execute("INSERT OR REPLACE INTO images VALUES (?, 'corrected', ?)", (sample_id, corrected_png))
+            connection.execute("INSERT OR REPLACE INTO images VALUES (?, 'edit_masks', ?)", (sample_id, mask_png))
+            connection.execute("INSERT OR REPLACE INTO metadata VALUES (?, ?)", (sample_id, json.dumps(metadata)))
+            connection.execute("""UPDATE samples SET status=?, changed_pixels=?, reviewed_at=?,
+                review_reason=?, review_history=?, history_count=?, has_corrected=1, has_meta=1,
+                record=? WHERE id=?""", (
+                record["status"], record["changed_pixels"], record.get("reviewed_at"),
+                record.get("review_reason"), json.dumps(history), len(history),
+                zlib.compress(json.dumps(record, separators=(",", ":")).encode(), level=1), sample_id))
         print(f"saved {sample_id}: {metadata['changed_pixels']} changed pixels; pending review")
+    connection.close()
 
 
 def main() -> None:
@@ -904,7 +967,7 @@ def main() -> None:
     parser.add_argument("--force", action="store_true", help="replace existing annotations")
     args = parser.parse_args()
     DATA = args.data_dir.resolve()
-    REVIEWS = DATA / "reviews" / "recipes"
+    REVIEWS = Path(tempfile.gettempdir()) / "pixel_annotation_reviews" / "recipes"
     if args.command == "list":
         for recipe_id, name in RECIPE_NAMES.items():
             print(f"{recipe_id:>4}  {name}")
