@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +30,9 @@ REVIEWS = DATA / "reviews" / "recipes"
 PALETTE = list(json.loads((ROOT / "webui/src/app/colorSystemMapping.json").read_text()))
 SIZES = (24, 52, 78, 104)
 RECIPE_NAMES = {
+    2: "pink starfish with raised right arm",
+    10: "solid yellow star",
+    25: "girl with pink shirt and pigtails",
     31: "five-petal flower",
     45: "Mickey and Minnie silhouettes",
     47: "two conifers",
@@ -52,8 +55,17 @@ RECIPE_NAMES = {
     284: "red apple with leaf",
     286: "yellow outlined star",
     323: "palm tree",
-    357: "sad yellow face",
+    341: "green fish with dorsal fin",
     375: "green leaf with veins",
+    410: "yellow star with black outline",
+    422: "green leaf with diagonal midrib",
+    426: "red owl with round eyes",
+    428: "blue shark silhouette",
+    436: "yellow flower with orange center and green leaf",
+    447: "three conifers above brown ground lines",
+    468: "orange mango with green leaf",
+    498: "white cat with pink bow and overalls",
+    505: "smiling yellow duck face with cream bill",
 }
 
 
@@ -75,7 +87,94 @@ def classes(source: np.ndarray, size: int, recipe_id: int) -> np.ndarray:
     result = np.full((size, size), -1, dtype=np.int16)
     threshold = 0.4 if size == 24 else 0.42 if size == 52 else 0.5
 
-    if recipe_id == 31:  # Flat purple five-petal flower.
+    if recipe_id == 2:  # Preserve source silhouette and enclosed eye whites.
+        prototypes = np.array([
+            (255, 255, 255), (249, 157, 131), (185, 214, 75),
+            (126, 105, 175), (35, 25, 30), (234, 153, 165),
+        ], dtype=np.float32)
+        labels = ((source.astype(np.float32)[:, :, None, :] - prototypes) ** 2).sum(axis=3).argmin(axis=2)
+        white = Image.fromarray((labels == 0).astype(np.uint8) * 255, 'L').copy()
+        width, height = white.size
+        for x in range(width):
+            for y in (0, height - 1):
+                if white.getpixel((x, y)) == 255:
+                    ImageDraw.floodfill(white, (x, y), 0)
+        for y in range(height):
+            for x in (0, width - 1):
+                if white.getpixel((x, y)) == 255:
+                    ImageDraw.floodfill(white, (x, y), 0)
+        yy, _ = np.indices(labels.shape)
+        eyes = cover((np.asarray(white) == 255) & (yy < height * 0.36), size)
+        fractions = np.stack([cover(labels == index, size) for index in range(6)])
+        present = (1 - fractions[0] + eyes) >= 0.43
+        colors = np.array([-1, 137, 54, 93, 198, 160], dtype=np.int16)
+        dominant = fractions[1:].argmax(axis=0) + 1
+        result[present] = colors[dominant[present]]
+        result[eyes >= 0.24] = 184
+        result[present & (fractions[4] >= (0.24 if size == 24 else 0.16))] = 198
+        if size == 24:
+            result[4:8, 10:17] = np.where(present[4:8, 10:17], 137, -1)
+            art = Image.fromarray(result.astype(np.int32), 'I')
+            draw = ImageDraw.Draw(art)
+            draw.ellipse((10, 4, 16, 7), fill=184)
+            draw.point((12, 5), fill=198)
+            draw.point((14, 5), fill=198)
+            result = np.asarray(art, dtype=np.int16).copy()
+
+    elif recipe_id == 10:  # Bright source star with no dark outline.
+        yellow = cover((r > 200) & (g > 190) & (b < 145), size)
+        result[yellow >= 0.38] = 246
+
+    elif recipe_id == 25:  # Separate the white collar/eyes from the background.
+        prototypes = np.array([
+            (255, 255, 255), (0, 0, 0), (250, 216, 190),
+            (236, 121, 145), (160, 95, 105), (209, 126, 133),
+        ], dtype=np.float32)
+        labels = ((source.astype(np.float32)[:, :, None, :] - prototypes) ** 2).sum(axis=3).argmin(axis=2)
+        yy, xx = np.indices(labels.shape)
+        mouth_region = ((xx >= source.shape[1] * 0.33) & (xx <= source.shape[1] * 0.51)
+                        & (yy >= source.shape[0] * 0.56) & (yy <= source.shape[0] * 0.68))
+        misplaced_lip = ((labels == 4) | (labels == 5)) & ~mouth_region
+        brightness = source.mean(axis=2)
+        labels[misplaced_lip & (yy < source.shape[0] * 0.72)] = 2
+        labels[misplaced_lip & (yy >= source.shape[0] * 0.72)] = 3
+        labels[misplaced_lip & (brightness < 170)] = 1
+        white = Image.fromarray((labels == 0).astype(np.uint8) * 255, 'L').copy()
+        width, height = white.size
+        for x in range(width):
+            for y in (0, height - 1):
+                if white.getpixel((x, y)) == 255:
+                    ImageDraw.floodfill(white, (x, y), 0)
+        for y in range(height):
+            for x in (0, width - 1):
+                if white.getpixel((x, y)) == 255:
+                    ImageDraw.floodfill(white, (x, y), 0)
+        enclosed = cover(np.asarray(white) == 255, size)
+        fractions = np.stack([cover(labels == index, size) for index in range(6)])
+        present = (1 - fractions[0] + enclosed) >= 0.45
+        colors = np.array([-1, 189, 126, 116, 243, 156], dtype=np.int16)
+        dominant = fractions[1:].argmax(axis=0) + 1
+        result[present] = colors[dominant[present]]
+        result[enclosed >= 0.22] = 184
+        result[present & (fractions[1] >= (0.28 if size == 24 else 0.18))
+               & (fractions[1] >= enclosed)] = 189
+        if size == 24:
+            for y in range(18, 24):
+                for x in range(3, 19):
+                    if result[y, x] == 189 and fractions[3, y, x] + enclosed[y, x] > 0.3:
+                        result[y, x] = 116 if fractions[3, y, x] >= enclosed[y, x] else 184
+            art = Image.fromarray(result.astype(np.int32), 'I')
+            draw = ImageDraw.Draw(art)
+            draw.ellipse((5, 7, 8, 11), fill=184)
+            draw.ellipse((6, 8, 7, 10), fill=189)
+            draw.point((7, 8), fill=184)
+            draw.ellipse((12, 9, 16, 13), fill=184)
+            draw.rectangle((14, 10, 15, 12), fill=189)
+            draw.point((15, 10), fill=184)
+            draw.point((9, 12), fill=189)
+            result = np.asarray(art, dtype=np.int16).copy()
+
+    elif recipe_id == 31:  # Flat purple five-petal flower.
         purple = cover((b > 180) & (r < 230) & (g < 180), size)
         result[purple >= threshold] = 91
 
@@ -106,19 +205,33 @@ def classes(source: np.ndarray, size: int, recipe_id: int) -> np.ndarray:
         result[stem >= (0.08 if size == 24 else 0.12)] = 168
         result[leaf >= (0.18 if size == 24 else 0.30)] = 42
         result[apple >= (0.23 if size == 24 else 0.35)] = 25
+        if size == 52 and result[20, 27] == 168:
+            result[20, 27] = 25
         # Keep the characteristic leaf vein without introducing isolated specks.
         if size == 24:
             vein = ((6, 2), (7, 3), (8, 4), (9, 5),
                     (10, 6), (7, 4), (10, 5))
-        elif size == 52:
-            vein = ((13, 5), (16, 8), (19, 11), (22, 14), (25, 17))
-            if result[20, 27] == 168:
-                result[20, 27] = 25
         else:
             vein = ()
         for x, y in vein:
             if result[y, x] == 42:
                 result[y, x] = 54
+        if size >= 52:
+            # The source's thin white veins break into scattered empty cells
+            # when sampled. Close only small gaps within the green leaf.
+            leaf_image = Image.fromarray((result == 42).astype(np.uint8) * 255, 'L')
+            window = 5
+            closed = leaf_image.filter(ImageFilter.MaxFilter(window)).filter(
+                ImageFilter.MinFilter(window))
+            fill = (np.asarray(closed) > 0) & (result < 0)
+            result[fill] = 42
+            # The tiny white glint beside the stem is discontinuous after
+            # sampling. Simplify it away inside the apple surface.
+            for y in range(round(size * 0.34), round(size * 0.43)):
+                for x in range(round(size * 0.4), round(size * 0.56)):
+                    if result[y, x] < 0 and np.sum(
+                        result[y - 1:y + 2, x - 1:x + 2] == 25) >= 4:
+                        result[y, x] = 25
 
     elif recipe_id == 102:  # Sad emoji: eyes, frown, rim and shadow.
         black = cover((r < 70) & (g < 70) & (b < 70), size)
@@ -128,9 +241,10 @@ def classes(source: np.ndarray, size: int, recipe_id: int) -> np.ndarray:
                       & (b < 100), size)
         face = cover((r > 180) & (g > 110) & ((r - b) > 30), size)
         for y in range(size):
-            result[y, face[y] >= 0.35] = 3 if y < size * 0.375 else 4 if y < size * 0.625 else 25
+            result[y, face[y] >= 0.35] = 4
         result[olive >= 0.23] = 51
         result[gray >= 0.22] = 261
+        black[round(size * 0.45):round(size * 0.73)] = 0
         result[black >= 0.3] = 189
 
     elif recipe_id == 105:  # Solid five-point star.
@@ -194,6 +308,32 @@ def classes(source: np.ndarray, size: int, recipe_id: int) -> np.ndarray:
         result[mid >= threshold] = 174
         result[light >= threshold] = 153
         result[black >= (0.18 if size == 24 else 0.3)] = 189
+        # Close antialiasing pinholes inside the ball without extending its
+        # silhouette. Prefer dark ink where a seam runs through the gap.
+        for _ in range(2):
+            repaired = result.copy()
+            for y in range(1, size - 1):
+                for x in range(1, size - 1):
+                    if result[y, x] >= 0:
+                        continue
+                    neighbors = [result[y - 1, x], result[y + 1, x],
+                                 result[y, x - 1], result[y, x + 1]]
+                    colors = [int(value) for value in neighbors if value >= 0]
+                    if len(colors) >= 3:
+                        repaired[y, x] = max(set(colors), key=lambda value: (colors.count(value), value == 189))
+            result = repaired
+        foreground = cover((r < 225) | (g < 225) | (b < 225), size)
+        repaired = result.copy()
+        for y in range(1, size - 1):
+            for x in range(1, size - 1):
+                if result[y, x] >= 0 or foreground[y, x] < 0.55:
+                    continue
+                neighbors = result[y - 1:y + 2, x - 1:x + 2].ravel()
+                colors = [int(value) for value in neighbors if value >= 0]
+                if colors:
+                    repaired[y, x] = 189 if black[y, x] >= 0.12 else max(
+                        set(colors), key=lambda value: colors.count(value))
+        result = repaired
 
     elif recipe_id == 152:  # Solid red heart, with antialiased white edge removed.
         red = cover((r > 145) & (g < 125) & (b < 125), size)
@@ -204,23 +344,45 @@ def classes(source: np.ndarray, size: int, recipe_id: int) -> np.ndarray:
         black = cover((r < 95) & (g < 95) & (b < 95), size)
         result[yellow >= threshold] = 252
         result[black >= (0.18 if size == 24 else 0.28)] = 189
-
+        # These cells are tiny transparent holes fully enclosed by the wings.
+        enclosed_holes = {
+            78: ((15, 41),),
+            104: ((20, 55), (27, 11), (82, 72), (83, 72)),
+        }
+        for x, y in enclosed_holes.get(size, ()):
+            if result[y, x] < 0 and yellow[y, x] > black[y, x]:
+                result[y, x] = 252
     elif recipe_id == 165:  # Two clean source-color regions, no shading.
         green = cover((g > 90) & (r < 170) & (b < 105), size)
         brown = cover((r > 95) & (r < 210) & (g < 135)
                       & (b < 85) & (r > g * 1.3), size)
         result[green >= threshold] = 42
         result[brown >= (0.3 if size == 24 else threshold)] = 181
+        if size == 24:
+            result[13, 10] = 181  # Join the left branch to the trunk.
 
     elif recipe_id == 170:  # Brown mouse, coral ear/tail and yellow cheese.
+        _, xx = np.indices(r.shape)
         brown = cover((r > 70) & (r < 185) & (g > 30) & (g < 110)
                       & (b < 85) & (r > g * 1.4), size)
         coral = cover((r > 175) & (g > 70) & (g < 155)
                       & (b > 35) & (b < 120), size)
-        cheese = cover((r > 195) & (g > 115) & (b < 100), size)
+        cheese = cover((r > 195) & (g > 115) & (b < 100)
+                       & (xx < r.shape[1] * 0.34), size)
         result[brown >= (0.3 if size == 24 else threshold)] = 146
         result[coral >= (0.22 if size == 24 else 0.35)] = 13
         result[cheese >= threshold] = 25
+        if size == 52:
+            result[28, 16] = result[29, 16] = 146  # Nose-to-snout join.
+            for x, y in ((44, 20), (45, 21), (46, 22), (47, 23)):
+                result[y, x] = 13
+        elif size == 78:
+            result[43, 23] = result[44, 24] = 146
+            result[30, 66] = 13
+            for x, y, color in ((64, 22, 146), (64, 23, 146),
+                                (63, 23, 146), (63, 26, 13),
+                                (64, 26, 13), (64, 27, 13)):
+                result[y, x] = color
 
     elif recipe_id == 179:  # Yellow bird: body, wing, beak and eye.
         body = cover((r > 215) & (g > 145) & (g < 230) & (b < 95), size)
@@ -235,37 +397,57 @@ def classes(source: np.ndarray, size: int, recipe_id: int) -> np.ndarray:
         result[beak >= (0.3 if size == 24 else threshold)] = 20
         result[eye >= (0.2 if size == 24 else 0.35)] = 189
         result[eye_shine >= (0.22 if size == 24 else 0.35)] = 184
+        if size == 104 and result[25, 10] < 0:
+            result[25, 10] = 25  # Close the one-cell gap beside the beak.
 
-    elif recipe_id == 182:  # Purple and pink flowers with two centers and stems.
-        purple = cover((r > 105) & (r < 220) & (g > 95) & (g < 190)
-                       & (b > 145) & (b > r), size)
-        pink = cover((r > 185) & (g < 105) & (b > 45) & (b < 175), size)
-        cream = cover((r > 220) & (g > 175) & (b > 105) & (b < 215), size)
-        light_pink = cover((r > 220) & (g > 115) & (g < 220)
-                           & (b > 140) & (b < 235), size)
-        green = cover((g > 35) & (g < 135) & (r < 100) & (b < 95)
-                      & (g > r * 1.3), size)
-        dark = cover((r < 75) & (g < 75) & (b < 75), size)
-        result[purple >= threshold] = 276
-        result[pink >= threshold] = 250
-        result[cream >= threshold] = 20
-        result[light_pink >= threshold] = 131
-        result[dark >= (0.2 if size == 24 else 0.3)] = 198
-        result[green >= (0.25 if size == 24 else 0.4)] = 37
+    elif recipe_id == 182:  # Mutually exclusive source colors, including white.
+        prototypes = np.array([
+            (255, 255, 255), (160, 140, 206), (247, 33, 104),
+            (254, 227, 154), (253, 181, 208), (0, 64, 0), (30, 30, 30),
+        ], dtype=np.float32)
+        distances = ((source.astype(np.float32)[:, :, None, :] - prototypes) ** 2).sum(axis=3)
+        labels = distances.argmin(axis=2)
+        fractions = np.stack([cover(labels == index, size) for index in range(len(prototypes))])
+        present = (1 - fractions[0]) >= 0.46
+        dominant = fractions[1:].argmax(axis=0) + 1
+        colors = np.array([-1, 276, 250, 20, 131, 37, 198], dtype=np.int16)
+        result[present] = colors[dominant[present]]
+        result[present & (fractions[6] >= 0.16)] = 198
 
     elif recipe_id == 228:  # Red star with darker folded facets.
         red = cover((r > 135) & (g < 75) & (b < 90), size)
         shade = cover((r > 95) & (r < 205) & (g < 55) & (b < 80), size)
         result[red >= threshold] = 141
         result[shade >= (0.55 if size == 24 else 0.6)] = 143
+        # Antialiased facet intersections can fall below both color thresholds.
+        # The center of this particular star is solid in the source.
+        center = size // 2
+        result[center - 2:center + 5, center - 3:center + 3][
+            result[center - 2:center + 5, center - 3:center + 3] < 0
+        ] = 143
 
     elif recipe_id == 241:  # Black ears, red shorts and two yellow buttons.
         black = cover((r < 75) & (g < 75) & (b < 75), size)
         red = cover((r > 110) & (g < 90) & (b < 90), size)
         yellow = cover((r > 185) & (g > 135) & (b < 115), size)
         result[black >= threshold] = 189
-        result[red >= threshold] = 249
+        result[red >= (0.22 if size == 24 else 0.3)] = 249
         result[yellow >= (0.3 if size == 24 else threshold)] = 25
+        if size == 24:
+            result[14:20, 8:16][result[14:20, 8:16] == 25] = 249
+            for cx in (10, 13):
+                result[15:20, cx] = 25
+                result[16:19, cx + 1] = 25
+        elif size in (52, 78):
+            result[result == 25] = 249
+            if size == 52:
+                buttons = ((22, 37.5, 1.45, 4.7), (29, 37.5, 1.45, 4.7))
+            else:
+                buttons = ((33, 57, 2.45, 7.2), (44, 57, 2.45, 7.2))
+            yy, xx = np.indices(result.shape)
+            for cx, cy, rx, ry in buttons:
+                oval = ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2 <= 1
+                result[oval & (result == 249)] = 25
 
     elif recipe_id == 258:  # Solid green flower with a transparent central hole.
         green = cover((r < 150) & (g > 115) & (b < 115), size)
@@ -280,27 +462,86 @@ def classes(source: np.ndarray, size: int, recipe_id: int) -> np.ndarray:
         result[red >= threshold] = 141
         result[green >= (0.3 if size == 24 else threshold)] = 29
         result[brown >= (0.3 if size == 24 else threshold)] = 181
-        result[black >= (0.2 if size == 24 else 0.3)] = 189
+        result[black >= (0.2 if size == 24 else 0.12)] = 189
 
     elif recipe_id == 286:  # Two-color outlined star.
         yellow = cover((r > 205) & (g > 205) & (b < 95), size)
         black = cover((r < 85) & (g < 85) & (b < 85), size)
         result[yellow >= threshold] = 246
-        result[black >= (0.2 if size == 24 else 0.3)] = 189
+        result[black >= (0.36 if size == 24 else 0.3)] = 189
+        if size == 104:
+            # Every enclosed transparent cell in this version falls on the
+            # black/yellow boundary; close the antialiasing pinholes.
+            visited = np.zeros((size, size), dtype=bool)
+            for y in range(size):
+                for x in range(size):
+                    if visited[y, x] or result[y, x] >= 0:
+                        continue
+                    component = [(x, y)]
+                    visited[y, x] = True
+                    for cx, cy in component:
+                        for nx, ny in ((cx - 1, cy), (cx + 1, cy),
+                                       (cx, cy - 1), (cx, cy + 1)):
+                            if (0 <= nx < size and 0 <= ny < size
+                                    and not visited[ny, nx] and result[ny, nx] < 0):
+                                visited[ny, nx] = True
+                                component.append((nx, ny))
+                    if (len(component) <= 2 and all(0 < cx < size - 1
+                                                    and 0 < cy < size - 1
+                                                    for cx, cy in component)):
+                        for cx, cy in component:
+                            result[cy, cx] = 189
 
-    elif recipe_id == 323:  # Palm leaves, curved trunk and small ground patch.
-        yy, _ = np.indices(r.shape)
-        green = cover((g > 55) & (g > r * 1.3) & (g > b * 1.2)
-                      & (r < 135), size)
-        brown = (r > 70) & (r < 210) & (g > 35) & (g < 160)
-        brown &= (b < 115) & (r > g * 1.12)
-        trunk = cover(brown & (yy < 420), size)
-        ground = cover(brown & (yy >= 420), size)
-        black = cover((r < 65) & (g < 65) & (b < 65), size)
-        result[green >= threshold] = 37
-        result[trunk >= threshold] = 168
-        result[ground >= threshold] = 269
-        result[black >= (0.18 if size == 24 else 0.3)] = 189
+    elif recipe_id == 323:  # Palm silhouette with one source class per pixel.
+        prototypes = np.array([
+            (255, 255, 255), (8, 130, 69), (81, 125, 43),
+            (142, 88, 36), (166, 125, 45), (25, 35, 26),
+        ], dtype=np.float32)
+        distances = ((source.astype(np.float32)[:, :, None, :] - prototypes) ** 2).sum(axis=3)
+        labels = distances.argmin(axis=2)
+        fractions = np.stack([cover(labels == index, size) for index in range(len(prototypes))])
+        present = (1 - fractions[0]) >= 0.46
+        dominant = fractions[1:].argmax(axis=0) + 1
+        colors = np.array([-1, 37, 37, 168, 269, 189], dtype=np.int16)
+        result[present] = colors[dominant[present]]
+        result[present & (fractions[5] >= 0.16)] = 189
+        yy, _ = np.indices(result.shape)
+        result[((result == 168) | (result == 269)) & (yy < size * 420 / source.shape[0])] = 168
+        result[((result == 168) | (result == 269)) & (yy >= size * 420 / source.shape[0])] = 269
+        if size >= 52:
+            padded = np.pad(present, 1)
+            interior = (padded[1:-1, 1:-1] & padded[:-2, 1:-1]
+                        & padded[2:, 1:-1] & padded[1:-1, :-2]
+                        & padded[1:-1, 2:])
+            inner_pad = np.pad(interior, 1)
+            deep = (inner_pad[1:-1, 1:-1] & inner_pad[:-2, 1:-1]
+                    & inner_pad[2:, 1:-1] & inner_pad[1:-1, :-2]
+                    & inner_pad[1:-1, 2:])
+            band = interior & ~deep & (result == 189) & (fractions[5] < 0.5)
+            surface = colors[fractions[1:5].argmax(axis=0) + 1]
+            result[band] = surface[band]
+            result[present & ~interior & (yy < size * 0.83)] = 189
+
+    elif recipe_id == 341:  # Flat fish, dark fin, white eye and thin ink.
+        prototypes = np.array([(255, 255, 255), (137, 202, 28),
+                               (101, 150, 20), (25, 30, 20)], dtype=np.float32)
+        labels = ((source.astype(np.float32)[:, :, None, :] - prototypes) ** 2).sum(axis=3).argmin(axis=2)
+        fractions = np.stack([cover(labels == index, size) for index in range(4)])
+        present = (1 - fractions[0]) >= 0.44
+        dominant = fractions[1:].argmax(axis=0) + 1
+        colors = np.array([-1, 39, 42, 189], dtype=np.int16)
+        result[present] = colors[dominant[present]]
+        yy, xx = np.indices(r.shape)
+        eye_region = ((xx - 104) / 17) ** 2 + ((yy - 202) / 33) ** 2 <= 1
+        eye_white = cover((labels == 0) & eye_region, size)
+        result[eye_white >= 0.25] = 184
+        result[(present | (eye_white > 0)) & (fractions[3] >= 0.14)] = 189
+        if size >= 52:
+            padded = np.pad(present, 1)
+            interior = (padded[1:-1, 1:-1] & padded[:-2, 1:-1]
+                        & padded[2:, 1:-1] & padded[1:-1, :-2]
+                        & padded[1:-1, 2:])
+            result[present & ~interior] = 189
 
     elif recipe_id == 375:  # Leaf field, darker rim and vein strokes.
         leaf = cover((g > 120) & (r < 155) & (b < 115)
@@ -310,11 +551,168 @@ def classes(source: np.ndarray, size: int, recipe_id: int) -> np.ndarray:
         result[leaf >= threshold] = 29
         result[veins >= (0.22 if size == 24 else 0.3)] = 37
 
-    elif recipe_id == 357:  # Round yellow face with black frown and eyes.
-        yellow = cover((r > 170) & (g > 105) & (b < 115), size)
-        black = cover((r < 80) & (g < 80) & (b < 80), size)
-        result[yellow >= threshold] = 25
-        result[black >= (0.16 if size == 24 else 0.27)] = 189
+    elif recipe_id == 410:  # Two flat source colors and a continuous border.
+        prototypes = np.array([(248, 248, 248), (255, 255, 0), (0, 0, 0)], dtype=np.float32)
+        labels = ((source.astype(np.float32)[:, :, None, :] - prototypes) ** 2).sum(axis=3).argmin(axis=2)
+        yellow = cover(labels == 1, size)
+        ink = cover(labels == 2, size)
+        yellow = (yellow + np.fliplr(yellow)) / 2
+        ink = (ink + np.fliplr(ink)) / 2
+        present = yellow + ink >= 0.44
+        result[present] = 246
+        result[present & (ink >= (0.32 if size == 24 else 0.24))] = 189
+        if size == 24:
+            padded = np.pad(present, 1)
+            interior = (padded[1:-1, 1:-1] & padded[:-2, 1:-1]
+                        & padded[2:, 1:-1] & padded[1:-1, :-2]
+                        & padded[1:-1, 2:])
+            result[present & ~interior] = 189
+
+    elif recipe_id == 422:  # Flat leaf field and a continuous main vein/stem.
+        green = cover((g > r * 1.3) & (g > b * 1.5) & (g > 60), size)
+        present = green >= 0.43
+        result[present] = 29
+        line = Image.new('L', (size, size), 0)
+        ImageDraw.Draw(line).line([(0, 0), (size - 1, size - 1)],
+                                 fill=255, width=max(1, round(size * 12 / 512)))
+        result[present & (np.asarray(line) > 0)] = 36
+        yy, xx = np.indices(result.shape)
+        result[present & (xx > size * 0.8) & (yy > size * 0.78)] = 36
+
+    elif recipe_id == 426:  # Two coherent red regions, cream eyes, dark pupils.
+        prototypes = np.array([
+            (255, 255, 255), (83, 14, 15), (123, 22, 25),
+            (249, 210, 209), (15, 15, 15), (245, 81, 27),
+        ], dtype=np.float32)
+        labels = ((source.astype(np.float32)[:, :, None, :] - prototypes) ** 2).sum(axis=3).argmin(axis=2)
+        yy, xx = np.indices(labels.shape)
+        eye_region = (((xx - 155) / 72) ** 2 + ((yy - 193) / 60) ** 2 <= 1)
+        eye_region |= (((xx - 355) / 72) ** 2 + ((yy - 189) / 60) ** 2 <= 1)
+        labels[(labels == 3) & ~eye_region] = 0
+        fractions = np.stack([cover(labels == index, size) for index in range(6)])
+        present = 1 - fractions[0] >= 0.46
+        dominant = fractions[1:].argmax(axis=0) + 1
+        colors = np.array([-1, 147, 142, 113, 189, 13], dtype=np.int16)
+        result[present] = colors[dominant[present]]
+        result[result == 189] = 113
+        result[result == 13] = 142
+        art = Image.fromarray(result.astype(np.int32), 'I')
+        draw = ImageDraw.Draw(art)
+        def owl_point(x, y):
+            return (round(x * (size - 1) / 511), round(y * (size - 1) / 511))
+        if size == 24:
+            pupils = ((7, 8, 8, 9), (16, 8, 17, 9))
+        else:
+            pupils = [(*owl_point(x1, y1), *owl_point(x2, y2))
+                      for x1, y1, x2, y2 in ((129, 173, 179, 214), (329, 169, 381, 210))]
+        for box in pupils:
+            draw.ellipse(box, fill=189)
+        draw.polygon([owl_point(x, y) for x, y in ((253, 211), (280, 248), (258, 302), (222, 255))], fill=13)
+        result = np.asarray(art, dtype=np.int16).copy()
+
+    elif recipe_id == 428:  # Keep the blue animal, omit the cast shadow.
+        blue = cover((b > r + 20) & (b > g + 10) & (g > r + 15), size)
+        result[blue >= 0.42] = 287
+        art = Image.fromarray(result.astype(np.int32), 'I')
+        draw = ImageDraw.Draw(art)
+        cx = round(80 * (size - 1) / 511)
+        cy = round(246 * (size - 1) / 511)
+        outer = max(1, round(24 * size / 512))
+        inner = max(1, round(16 * size / 512))
+        if outer > inner:
+            left, top = cx - outer // 2, cy - outer // 2
+            draw.ellipse((left, top, left + outer - 1, top + outer - 1), fill=184)
+        left, top = cx - inner // 2, cy - inner // 2
+        draw.rectangle((left, top, left + inner - 1, top + inner - 1), fill=189)
+        result = np.asarray(art, dtype=np.int16).copy()
+
+    elif recipe_id == 436:
+        prototypes = np.array([(255, 255, 255), (255, 245, 0),
+                               (255, 180, 65), (140, 194, 60),
+                               (40, 40, 35)], dtype=np.float32)
+        labels = ((source.astype(np.float32)[:, :, None, :] - prototypes) ** 2).sum(3).argmin(2)
+        fractions = np.stack([cover(labels == i, size) for i in range(5)])
+        present = 1 - fractions[0] >= .45
+        colors = np.array([-1, 246, 236, 42, 188], dtype=np.int16)
+        dominant = fractions[1:].argmax(0) + 1
+        result[present] = colors[dominant[present]]
+        result[present & (fractions[4] >= (.24 if size == 24 else .28))] = 188
+
+    elif recipe_id == 447:
+        prototypes = np.array([(255, 255, 255), (38, 216, 38),
+                               (35, 145, 40), (12, 66, 17),
+                               (113, 67, 39), (15, 24, 16)], dtype=np.float32)
+        labels = ((source.astype(np.float32)[:, :, None, :] - prototypes) ** 2).sum(3).argmin(2)
+        labels[(r > g * 1.3) & (r > b * 1.4) & (r < 180)] = 4
+        fractions = np.stack([cover(labels == i, size) for i in range(6)])
+        present = 1 - fractions[0] >= .43
+        colors = np.array([-1, 30, 33, 40, 270, 189], dtype=np.int16)
+        dominant = fractions[1:].argmax(0) + 1
+        result[present] = colors[dominant[present]]
+        result[present & (fractions[5] >= .25)] = 189
+
+    elif recipe_id == 468:
+        prototypes = np.array([(255, 255, 255), (245, 145, 0),
+                               (25, 166, 46), (15, 20, 15)], dtype=np.float32)
+        labels = ((source.astype(np.float32)[:, :, None, :] - prototypes) ** 2).sum(3).argmin(2)
+        fractions = np.stack([cover(labels == i, size) for i in range(4)])
+        present = 1 - fractions[0] >= .46
+        # The white reflection belongs inside the fruit, not a cutout.
+        holes = Image.fromarray((~present).astype(np.uint8) * 255, 'L').copy()
+        ImageDraw.floodfill(holes, (0, 0), 0)
+        reflection = np.asarray(holes) == 255
+        present |= reflection
+        colors = np.array([-1, 167, 33, 189], dtype=np.int16)
+        dominant = fractions[1:].argmax(0) + 1
+        result[present] = colors[dominant[present]]
+        padded = np.pad(present, 1)
+        interior = (padded[1:-1, 1:-1] & padded[:-2, 1:-1] & padded[2:, 1:-1]
+                    & padded[1:-1, :-2] & padded[1:-1, 2:])
+        result[present & ~interior] = 189
+        result[present & (fractions[3] >= .22)] = 189
+        result[reflection] = 0
+
+    elif recipe_id == 498:
+        prototypes = np.array([(255, 255, 255), (250, 154, 253),
+                               (255, 255, 0), (0, 0, 0)], dtype=np.float32)
+        labels = ((source.astype(np.float32)[:, :, None, :] - prototypes) ** 2).sum(3).argmin(2)
+        white = Image.fromarray((labels == 0).astype(np.uint8) * 255, 'L').copy()
+        ImageDraw.floodfill(white, (0, 0), 0)
+        labels[np.asarray(white) == 255] = 4
+        fractions = np.stack([cover(labels == i, size) for i in range(5)])
+        present = (1 - fractions[0] >= .44) | (fractions[3] >= .22)
+        colors = np.array([-1, 244, 246, 189, 184], dtype=np.int16)
+        dominant = fractions[1:].argmax(0) + 1
+        result[present] = colors[dominant[present]]
+        result[present & (fractions[3] >= (.18 if size == 24 else .24))] = 189
+
+    elif recipe_id == 505:
+        prototypes = np.array([(255, 255, 255), (255, 215, 0),
+                               (225, 216, 166), (53, 57, 59)], dtype=np.float32)
+        labels = ((source.astype(np.float32)[:, :, None, :] - prototypes) ** 2).sum(3).argmin(2)
+        fractions = np.stack([cover(labels == i, size) for i in range(4)])
+        fractions = (fractions + fractions[:, :, ::-1]) / 2
+        present = 1 - fractions[0] >= .45
+        colors = np.array([-1, 246, 210, 188], dtype=np.int16)
+        dominant = fractions[1:].argmax(0) + 1
+        result[present] = colors[dominant[present]]
+        result[present & (fractions[3] >= (.22 if size == 24 else .28))] = 188
+        if size == 24:
+            result[:4] = -1
+            art = Image.fromarray(result.astype(np.int32), 'I')
+            draw = ImageDraw.Draw(art)
+            draw.line([(9, 1), (11, 4)], fill=188)
+            draw.line([(14, 1), (12, 4)], fill=188)
+            draw.line([(11, 0), (11, 4)], fill=188)
+            draw.line([(12, 0), (12, 4)], fill=188)
+            for left in (6, 15):
+                draw.rectangle((left, 10, left + 2, 11), fill=246)
+                draw.line([(left, 11), (left, 10), (left + 2, 10), (left + 2, 11)], fill=188)
+            # Separate the nostrils instead of merging them into a bar.
+            draw.rectangle((10, 13, 13, 14), fill=210)
+            draw.point((10, 15), fill=188)
+            draw.point((13, 15), fill=188)
+            result = np.asarray(art, dtype=np.int16).copy()
 
     else:
         raise ValueError(f"No reviewed recipe for image {recipe_id}")
@@ -387,6 +785,18 @@ def apply(recipe_id: int, sizes: tuple[int, ...], force: bool) -> None:
         if not force and (record.get("status", "unmodified") != "unmodified" or "corrected_indices" in record):
             print(f"skip {sample_id}: existing annotation or review state")
             continue
+        previous_status = record.get("status", "unmodified")
+        if previous_status in ("qualified", "unqualified"):
+            history = record.get("review_history") or [{
+                "from": None, "to": previous_status,
+                "reason": record.get("review_reason", ""),
+                "timestamp": record.get("reviewed_at"),
+            }]
+            record["review_history"] = [*history, {
+                "from": previous_status, "to": "pending",
+                "reason": "AI 修正后重新送审",
+                "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }]
         source = np.asarray(Image.open(DATA / "sources" / f"{sample_id}.png").convert("RGB"))
         indices = classes(source, size, recipe_id)
         flat = indices.ravel().tolist()
@@ -419,6 +829,7 @@ def apply(recipe_id: int, sizes: tuple[int, ...], force: bool) -> None:
         record["status"] = "pending"
         record["annotation_source"] = "ai"
         record.pop("reviewed_at", None)
+        record.pop("review_reason", None)
         atomic_json(record_file, record)
         print(f"saved {sample_id}: {metadata['changed_pixels']} changed pixels; pending review")
 

@@ -505,7 +505,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
                        --status unmodified|pending|human_edited|qualified|unqualified|all
                        --limit 20  --offset 0  --search <id>
 
-  next                 获取下一个待标注样本 ID
+  next                 获取下一个待标注样本 ID（优先不合格）
                        --size 24|52|78|104
 
   show <id>            查看样本详情、画布色卡统计，并生成原图/预测/纠错三栏对照图
@@ -627,6 +627,8 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       console.log('序号'.padEnd(6) + '样本 ID'.padEnd(16) + '尺寸'.padEnd(12) + '状态'.padEnd(10) + '已修改像素'.padEnd(14) + '模型版本');
       console.log('-'.repeat(70));
 
+      // Prioritize rejected work before pagination, matching the web queue.
+      records.sort((a, b) => Number(b.status === 'unqualified') - Number(a.status === 'unqualified'));
       const page = records.slice(offset, offset + limit);
       page.forEach((r, idx) => {
         const no = String(offset + idx + 1).padStart(4, '0');
@@ -647,13 +649,21 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       const allIds = allFiles.map(f => f.slice(0, -5)).sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
       const sizeFilter = args.size ? String(args.size) : '';
 
+      let firstUnmodified = null;
       for (const id of allIds) {
         const rec = JSON.parse(await readFile(path.join(indicesDir, `${id}.json`), 'utf8'));
         if (sizeFilter && String(rec.width) !== sizeFilter) continue;
-        if (!rec.corrected_indices && (!rec.status || rec.status === 'unmodified')) {
+        if (rec.status === 'unqualified') {
           console.log(id);
           return;
         }
+        if (!firstUnmodified && !rec.corrected_indices && (!rec.status || rec.status === 'unmodified')) {
+          firstUnmodified = id;
+        }
+      }
+      if (firstUnmodified) {
+        console.log(firstUnmodified);
+        return;
       }
       console.error('没有找到符合条件的待审样本！');
       process.exit(1);
