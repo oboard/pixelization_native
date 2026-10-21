@@ -1,0 +1,43 @@
+{
+  "rgb": [
+    [
+      255,
+      255,
+      255
+    ],
+    [
+      21,
+      21,
+      21
+    ],
+    [
+      255,
+      0,
+      0
+    ],
+    [
+      248,
+      202,
+      51
+    ],
+    [
+      16,
+      31,
+      126
+    ]
+  ],
+  "indices": [
+    -1,
+    198,
+    249,
+    4,
+    90
+  ],
+  "coverage": 0.44,
+  "ink_coverage": 0.22,
+  "symmetry": false,
+  "outline": false,
+  "regions_only": false,
+  "ink": 1,
+  "enclosed_white": 184
+}
