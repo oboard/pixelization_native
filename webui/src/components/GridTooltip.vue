@@ -10,10 +10,10 @@ withDefaults(defineProps<{
 <template>
   <div
     v-if="tooltipData"
-    class="absolute bg-gray-800 text-white text-xs px-2 py-1 rounded shadow-lg pointer-events-none flex items-center space-x-1.5 z-50"
+    class="absolute bg-neutral text-neutral-content text-xs px-2 py-1 rounded shadow-lg pointer-events-none flex items-center space-x-1.5 z-50"
     :style="{ left: `${tooltipData.x}px`, top: `${tooltipData.y - 25}px`, transform: 'translate(-50%, -100%)', whiteSpace: 'nowrap' }"
   >
-    <span class="inline-block w-3 h-3 rounded-sm border border-gray-400 dark:border-gray-500 shrink-0" :style="{ backgroundColor: tooltipData.color }" />
+    <span class="inline-block w-3 h-3 rounded-sm border border-base-300 shrink-0" :style="{ backgroundColor: tooltipData.color }" />
     <span class="font-mono font-semibold">{{ getDisplayColorKey(tooltipData.color, selectedColorSystem) }}</span>
   </div>
 </template>

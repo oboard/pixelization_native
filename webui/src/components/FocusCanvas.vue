@@ -199,9 +199,9 @@ function handleMouseUp() { isDragging.value = false; lastPanPoint = null }
 </script>
 
 <template>
-  <div class="w-full h-full flex items-center justify-center overflow-hidden bg-gray-100" style="touch-action: none">
+  <div class="w-full h-full flex items-center justify-center overflow-hidden bg-base-200" style="touch-action: none">
     <div :style="{ transform: `scale(${canvasScale}) translate(${canvasOffset.x}px, ${canvasOffset.y}px)`, transformOrigin: 'center center' }">
-      <canvas ref="canvasRef" class="cursor-crosshair border border-gray-300"
+      <canvas ref="canvasRef" class="cursor-crosshair border border-base-300"
         @click="handleClick" @wheel="handleWheel" @touchstart="handleTouchStart"
         @touchmove="handleTouchMove" @touchend="handleTouchEnd"
         @mousedown="handleMouseDown" @mousemove="handleMouseMove"

@@ -187,7 +187,7 @@ onUnmounted(() => {
 
 <template>
   <template v-if="isActive">
-    <div v-if="!selectionArea" class="fixed top-4 left-1/2 transform -translate-x-1/2 bg-blue-500 text-white px-4 py-2 rounded-lg shadow-lg z-70">
+    <div v-if="!selectionArea" class="fixed top-4 left-1/2 transform -translate-x-1/2 bg-primary text-primary-content px-4 py-2 rounded-lg shadow-lg z-70">
       <div class="flex items-center gap-2">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" :stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -199,13 +199,13 @@ onUnmounted(() => {
     <div
       v-else
       ref="magnifierRef"
-      class="fixed bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-600 select-none"
+      class="fixed bg-base-100 rounded-xl shadow-2xl border border-base-300 select-none"
       :class="isFloatingActive ? 'z-60' : 'z-50'"
       :style="{ left: `${magnifierPosition.x}px`, top: `${magnifierPosition.y}px` }"
       @click="onActivateFloating"
     >
       <div
-        class="flex items-center justify-between p-3 bg-linear-to-br from-green-500 to-teal-500 text-white rounded-t-xl cursor-move"
+        class="flex items-center justify-between p-3 bg-linear-to-br from-success to-primary text-success-content rounded-t-xl cursor-move"
         @mousedown="handleTitleBarMouseDown"
         @touchstart="handleTitleBarTouchStart"
       >
@@ -229,13 +229,13 @@ onUnmounted(() => {
         </div>
       </div>
       <div class="p-3">
-        <div class="border border-gray-300 dark:border-gray-600 rounded-lg overflow-auto max-h-96">
+        <div class="border border-base-300 rounded-lg overflow-auto max-h-96">
           <canvas ref="canvasRef" @click="handleMagnifiedClick" class="cursor-crosshair block" />
         </div>
-        <div v-if="selectedColor" class="mt-2 p-2 bg-gray-100 dark:bg-gray-700 rounded-lg">
+        <div v-if="selectedColor" class="mt-2 p-2 bg-base-200 rounded-lg">
           <div class="flex items-center gap-2 text-xs">
-            <div class="w-4 h-4 rounded border border-gray-300 dark:border-gray-500" :style="{ backgroundColor: selectedColor.color }" />
-            <span class="text-gray-700 dark:text-gray-300">当前: {{ getColorKeyByHex(selectedColor.color, selectedColorSystem) }}</span>
+            <div class="w-4 h-4 rounded border border-base-300" :style="{ backgroundColor: selectedColor.color }" />
+            <span class="text-base-content">当前: {{ getColorKeyByHex(selectedColor.color, selectedColorSystem) }}</span>
           </div>
         </div>
       </div>

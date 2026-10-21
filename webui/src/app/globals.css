@@ -1,26 +1,99 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* Prefix components to avoid collisions with the editor's layout classes. */
+@plugin "daisyui" {
+  themes: emerald --default, forest --prefersdark;
+  prefix: "du-";
+  logs: false;
 }
+
+/* Emerald/forest with the workspace's existing green and terracotta palette. */
+@plugin "daisyui/theme" {
+  name: "emerald";
+  default: true;
+  color-scheme: light;
+  --color-base-100: #ffffff;
+  --color-base-200: #f5f8f6;
+  --color-base-300: #dfe8e3;
+  --color-base-content: #223631;
+  --color-primary: #246959;
+  --color-primary-content: #ffffff;
+  --color-secondary: #b9502e;
+  --color-secondary-content: #ffffff;
+  --color-accent: #e96f43;
+  --color-accent-content: #28140c;
+  --color-neutral: #344e46;
+  --color-neutral-content: #ffffff;
+  --color-info: #286e89;
+  --color-info-content: #ffffff;
+  --color-success: #28734f;
+  --color-success-content: #ffffff;
+  --color-warning: #906400;
+  --color-warning-content: #ffffff;
+  --color-error: #ad4f3d;
+  --color-error-content: #ffffff;
+  --radius-field: 0.5rem;
+  --radius-selector: 0.5rem;
+  --radius-box: 0.75rem;
+}
+
+@plugin "daisyui/theme" {
+  name: "forest";
+  prefersdark: true;
+  color-scheme: dark;
+  --color-base-100: #1d2c28;
+  --color-base-200: #15221e;
+  --color-base-300: #3b5148;
+  --color-base-content: #e1ece6;
+  --color-primary: #8acdb0;
+  --color-primary-content: #122b22;
+  --color-secondary: #eea184;
+  --color-secondary-content: #331b12;
+  --color-accent: #f09b75;
+  --color-accent-content: #331b12;
+  --color-neutral: #3b5148;
+  --color-neutral-content: #e1ece6;
+  --color-info: #8ac5df;
+  --color-info-content: #112b36;
+  --color-success: #8cd1a6;
+  --color-success-content: #132d1d;
+  --color-warning: #e4c678;
+  --color-warning-content: #30280f;
+  --color-error: #f0a291;
+  --color-error-content: #351b16;
+  --radius-field: 0.5rem;
+  --radius-selector: 0.5rem;
+  --radius-box: 0.75rem;
+}
+
+@custom-variant dark (&:where([data-theme="forest"], [data-theme="forest"] *));
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-background: var(--color-base-200);
+  --color-foreground: var(--color-base-content);
+  --font-sans: Inter, system-ui, sans-serif;
+  --font-mono: monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+:root {
+  --ui-muted: color-mix(in oklab, var(--color-base-content) 70%, var(--color-base-100));
+  --ui-subtle: color-mix(in oklab, var(--color-base-content) 58%, var(--color-base-100));
+  --ui-selected: color-mix(in oklab, var(--color-primary) 12%, var(--color-base-100));
+  --ui-hover: color-mix(in oklab, var(--color-primary) 6%, var(--color-base-100));
+  --ui-error-soft: color-mix(in oklab, var(--color-error) 12%, var(--color-base-100));
+  --ui-success-soft: color-mix(in oklab, var(--color-success) 12%, var(--color-base-100));
+  --ui-checker: color-mix(in oklab, var(--color-base-content) 8%, var(--color-base-200));
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-base-200);
+  color: var(--color-base-content);
+  font-family: Inter, system-ui, sans-serif;
 }
+
+button, input, select, textarea { accent-color: var(--color-primary); }
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 3px;
+}
+::selection { background: var(--color-primary); color: var(--color-primary-content); }

@@ -261,24 +261,24 @@ async function downloadCard() {
 </script>
 
 <template>
-  <div v-if="isVisible" class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-    <div class="bg-white rounded-lg max-w-md w-full max-h-[90vh] overflow-y-auto"><div class="p-6">
-      <div class="text-center mb-6"><h2 class="text-2xl font-bold text-gray-800 mb-2">🎉 作品完成 🎉</h2>
-        <div class="text-gray-600 space-y-1"><p>总用时：{{ formatTime(totalElapsedTime) }}</p><p>共完成：{{ totalBeads }} 颗豆子</p></div></div>
+  <div v-if="isVisible" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+    <div class="bg-base-100 rounded-lg max-w-md w-full max-h-[90vh] overflow-y-auto"><div class="p-6">
+      <div class="text-center mb-6"><h2 class="text-2xl font-bold text-base-content mb-2">🎉 作品完成 🎉</h2>
+        <div class="text-base-content/70 space-y-1"><p>总用时：{{ formatTime(totalElapsedTime) }}</p><p>共完成：{{ totalBeads }} 颗豆子</p></div></div>
       <div v-if="!userPhoto" class="text-center">
-        <div v-if="!isCapturing"><p class="text-gray-600 mb-4">拍一张照片生成专属打卡图吧！</p>
-          <div v-if="cameraError" class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4"><p class="text-yellow-800 text-sm">📱 无法访问相机，可能是权限限制或设备不支持。<br />你可以选择使用作品图生成打卡图。</p></div>
-          <div class="space-y-3"><button @click="startCamera" class="w-full bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition-colors">📸 开启相机拍照</button>
-            <button @click="skipPhoto" class="w-full bg-green-500 text-white px-6 py-3 rounded-lg hover:bg-green-600 transition-colors">🎨 跳过拍照，使用作品图</button></div>
+        <div v-if="!isCapturing"><p class="text-base-content/70 mb-4">拍一张照片生成专属打卡图吧！</p>
+          <div v-if="cameraError" class="bg-warning/10 border border-warning/30 rounded-lg p-3 mb-4"><p class="text-warning text-sm">📱 无法访问相机，可能是权限限制或设备不支持。<br />你可以选择使用作品图生成打卡图。</p></div>
+          <div class="space-y-3"><button @click="startCamera" class="w-full bg-primary text-primary-content px-6 py-3 rounded-lg hover:bg-primary transition-colors">📸 开启相机拍照</button>
+            <button @click="skipPhoto" class="w-full bg-success text-success-content px-6 py-3 rounded-lg hover:bg-success transition-colors">🎨 跳过拍照，使用作品图</button></div>
         </div>
         <div v-else><video ref="videoRef" autoplay playsinline class="w-full max-w-xs mx-auto rounded-lg mb-4" />
-          <button @click="takePhoto" class="bg-green-500 text-white px-6 py-3 rounded-lg hover:bg-green-600 transition-colors mr-2">📸 拍照</button>
-          <button @click="stopCamera" class="bg-gray-500 text-white px-4 py-3 rounded-lg hover:bg-gray-600 transition-colors">取消</button></div>
+          <button @click="takePhoto" class="bg-success text-success-content px-6 py-3 rounded-lg hover:bg-success transition-colors mr-2">📸 拍照</button>
+          <button @click="stopCamera" class="bg-neutral text-neutral-content px-4 py-3 rounded-lg hover:bg-neutral transition-colors">取消</button></div>
       </div>
       <div v-else class="text-center"><img :src="userPhoto" alt="用户照片" class="w-32 h-32 rounded-full mx-auto mb-4 object-cover" />
-        <div class="space-y-3"><button @click="downloadCard" class="w-full bg-linear-to-br from-purple-500 to-pink-500 text-white py-3 rounded-lg hover:from-purple-600 hover:to-pink-600 transition-colors">📥 下载打卡图</button>
-          <button @click="userPhoto = null" class="w-full bg-gray-500 text-white py-2 rounded-lg hover:bg-gray-600 transition-colors">重新拍照</button></div></div>
-      <div class="mt-6 pt-4 border-t border-gray-200"><button @click="close" class="w-full bg-gray-100 text-gray-600 py-2 rounded-lg hover:bg-gray-200 transition-colors">稍后再说</button></div>
+        <div class="space-y-3"><button @click="downloadCard" class="w-full bg-linear-to-br from-secondary to-accent text-secondary-content py-3 rounded-lg hover:from-secondary hover:to-accent transition-colors">📥 下载打卡图</button>
+          <button @click="userPhoto = null" class="w-full bg-neutral text-neutral-content py-2 rounded-lg hover:bg-neutral transition-colors">重新拍照</button></div></div>
+      <div class="mt-6 pt-4 border-t border-base-300"><button @click="close" class="w-full bg-base-200 text-base-content/70 py-2 rounded-lg hover:bg-base-200 transition-colors">稍后再说</button></div>
     </div></div>
     <canvas ref="canvasRef" style="display: none" /><canvas ref="cardCanvasRef" style="display: none" />
   </div>

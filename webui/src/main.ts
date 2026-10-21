@@ -4,6 +4,7 @@ import FocusPage from "./app/focus/page.vue";
 import AnnotatePage from "./app/annotate/page.vue";
 import ReviewPage from "./app/review/page.vue";
 import "./app/globals.css";
+import "./lib/theme";
 
 const route = window.location.pathname.replace(/\/$/, "");
 const App = route === "/generator" ? Home : route === "/focus" ? FocusPage : route === "/review" ? ReviewPage : AnnotatePage;

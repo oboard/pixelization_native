@@ -113,7 +113,7 @@ function touchEnd() {
 <template>
   <canvas
     ref="canvas"
-    class="border border-gray-300 dark:border-gray-600 max-w-full h-auto rounded block"
+    class="border border-base-300 max-w-full h-auto rounded block"
     :class="isManualColoringMode ? 'cursor-pointer' : 'cursor-grab'"
     :style="{ imageRendering: 'pixelated' }"
     @mousemove="mouseMove"

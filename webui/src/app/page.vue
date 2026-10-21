@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ThemeSwitcher from "../components/ThemeSwitcher.vue";
 import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import mard221Palette from "../../../mard_221_palette.json";
 
@@ -2093,21 +2094,22 @@ import ImageCropperModal from "../components/ImageCropperModal.vue";
 </script>
 
 <template>
-<div class="min-h-screen p-4 sm:p-6 flex flex-col items-center bg-linear-to-b from-gray-50 to-white dark:from-gray-800 dark:to-gray-900 font-(family-name:--font-geist-sans) overflow-x-hidden">
+<div class="flex justify-end bg-base-200 px-4 py-2"><ThemeSwitcher /></div>
+<div class="min-h-screen p-4 sm:p-6 flex flex-col items-center bg-linear-to-b from-base-200 to-base-100 font-(family-name:--font-geist-sans) overflow-x-hidden">
 <header class="w-full md:max-w-4xl text-center mt-6 mb-8 sm:mt-8 sm:mb-10 relative overflow-hidden">
-<div class="absolute top-0 left-0 w-48 h-48 bg-blue-100 dark:bg-blue-900 rounded-full opacity-30 dark:opacity-20 blur-3xl">
+<div class="absolute top-0 left-0 w-48 h-48 bg-primary/10 rounded-full opacity-30 dark:opacity-20 blur-3xl">
 </div>
-<div class="absolute bottom-0 right-0 w-48 h-48 bg-pink-100 dark:bg-pink-900 rounded-full opacity-30 dark:opacity-20 blur-3xl">
+<div class="absolute bottom-0 right-0 w-48 h-48 bg-accent/10 rounded-full opacity-30 dark:opacity-20 blur-3xl">
 </div>
 <div class="absolute top-0 right-0 grid grid-cols-5 gap-1 opacity-20 dark:opacity-10">
 <template v-for='(_, i) in 25' :key='i'>
-<div class="w-1.5 h-1.5 rounded-full bg-gray-400 dark:bg-gray-600">
+<div class="w-1.5 h-1.5 rounded-full bg-base-300">
 </div>
 </template>
 </div>
 <div class="absolute bottom-0 left-0 grid grid-cols-5 gap-1 opacity-20 dark:opacity-10">
 <template v-for='(_, i) in 25' :key='i'>
-<div class="w-1.5 h-1.5 rounded-full bg-gray-400 dark:bg-gray-600">
+<div class="w-1.5 h-1.5 rounded-full bg-base-300">
 </div>
 </template>
 </div>
@@ -2115,125 +2117,125 @@ import ImageCropperModal from "../components/ImageCropperModal.vue";
 <div class="relative flex flex-col items-center">
 <div class="relative flex flex-col items-center space-y-3">
 <div class="relative">
-<h1 class="relative text-4xl sm:text-6xl font-black text-transparent bg-clip-text bg-linear-to-br from-pink-500 via-purple-500 to-cyan-400 tracking-wider drop-shadow-2xl transform hover:scale-105 transition-transform duration-300 animate-bounce">Mardize
+<h1 class="relative text-4xl sm:text-6xl font-black text-transparent bg-clip-text bg-linear-to-br from-accent via-secondary to-info tracking-wider drop-shadow-2xl transform hover:scale-105 transition-transform duration-300 animate-bounce">Mardize
                   </h1>
-<div class="absolute -top-4 -right-5 w-4 h-4 bg-linear-to-br from-yellow-400 to-pink-500 rounded-full animate-spin transform rotate-12">
+<div class="absolute -top-4 -right-5 w-4 h-4 bg-linear-to-br from-warning to-accent rounded-full animate-spin transform rotate-12">
 </div>
-<div class="absolute -top-2 -right-2 w-2.5 h-2.5 bg-linear-to-br from-pink-400 to-purple-500 rounded-full animate-ping">
+<div class="absolute -top-2 -right-2 w-2.5 h-2.5 bg-linear-to-br from-accent to-secondary rounded-full animate-ping">
 </div>
-<div class="absolute -top-1 -right-0.5 w-1.5 h-1.5 bg-linear-to-br from-purple-400 to-blue-500 rotate-45 animate-pulse delay-100">
+<div class="absolute -top-1 -right-0.5 w-1.5 h-1.5 bg-linear-to-br from-secondary to-primary rotate-45 animate-pulse delay-100">
 </div>
-<div class="absolute -bottom-3 -left-5 w-4 h-4 bg-linear-to-br from-blue-400 to-purple-500 rotate-45 animate-bounce delay-200">
+<div class="absolute -bottom-3 -left-5 w-4 h-4 bg-linear-to-br from-primary to-secondary rotate-45 animate-bounce delay-200">
 </div>
-<div class="absolute -bottom-1 -left-2 w-2 h-2 bg-linear-to-br from-cyan-400 to-blue-500 rounded-full animate-spin delay-300">
+<div class="absolute -bottom-1 -left-2 w-2 h-2 bg-linear-to-br from-info to-primary rounded-full animate-spin delay-300">
 </div>
-<div class="absolute top-0 left-1/2 w-1.5 h-1.5 bg-linear-to-br from-purple-400 to-pink-500 rounded-full animate-pulse delay-400">
+<div class="absolute top-0 left-1/2 w-1.5 h-1.5 bg-linear-to-br from-secondary to-accent rounded-full animate-pulse delay-400">
 </div>
-<div class="absolute -bottom-4 -right-3 w-3 h-3 bg-linear-to-br from-cyan-400 to-teal-500 rounded-full animate-bounce delay-500">
+<div class="absolute -bottom-4 -right-3 w-3 h-3 bg-linear-to-br from-info to-primary rounded-full animate-bounce delay-500">
 </div>
-<div class="absolute top-1 -left-4 w-2 h-2 bg-linear-to-br from-pink-400 to-red-500 rotate-45 animate-ping delay-600">
+<div class="absolute top-1 -left-4 w-2 h-2 bg-linear-to-br from-accent to-error rotate-45 animate-ping delay-600">
 </div>
-<div class="absolute -top-3 left-0 w-1 h-1 bg-yellow-300 rounded-full animate-pulse delay-700">
+<div class="absolute -top-3 left-0 w-1 h-1 bg-warning rounded-full animate-pulse delay-700">
 </div>
-<div class="absolute -top-2 right-3 w-0.5 h-0.5 bg-pink-300 rounded-full animate-bounce delay-800">
+<div class="absolute -top-2 right-3 w-0.5 h-0.5 bg-accent rounded-full animate-bounce delay-800">
 </div>
-<div class="absolute bottom-0 -left-1 w-0.5 h-0.5 bg-blue-300 rounded-full animate-ping delay-900">
+<div class="absolute bottom-0 -left-1 w-0.5 h-0.5 bg-primary rounded-full animate-ping delay-900">
 </div>
-<div class="absolute bottom-1 right-0 w-1 h-1 bg-purple-300 rounded-full animate-pulse delay-1000">
+<div class="absolute bottom-1 right-0 w-1 h-1 bg-secondary rounded-full animate-pulse delay-1000">
 </div>
 </div>
 <div class="relative">
-<h2 class="relative text-xl sm:text-3xl font-bold text-transparent bg-clip-text bg-linear-to-br from-blue-500 via-green-500 to-emerald-400 tracking-widest transform hover:scale-102 transition-all duration-300">拼豆AI生成
+<h2 class="relative text-xl sm:text-3xl font-bold text-transparent bg-clip-text bg-linear-to-br from-primary via-success to-success tracking-widest transform hover:scale-102 transition-all duration-300">拼豆AI生成
                   </h2>
-<div class="absolute -top-3 -left-6 w-3.5 h-3.5 bg-linear-to-br from-blue-400 to-teal-500 rounded-full animate-bounce delay-75">
+<div class="absolute -top-3 -left-6 w-3.5 h-3.5 bg-linear-to-br from-primary to-primary rounded-full animate-bounce delay-75">
 </div>
-<div class="absolute -top-1 -left-3 w-2 h-2 bg-linear-to-br from-teal-400 to-green-500 rounded-full animate-ping delay-150">
+<div class="absolute -top-1 -left-3 w-2 h-2 bg-linear-to-br from-primary to-success rounded-full animate-ping delay-150">
 </div>
-<div class="absolute -top-0.5 -left-1 w-1 h-1 bg-linear-to-br from-green-400 to-emerald-500 rotate-45 animate-pulse delay-225">
+<div class="absolute -top-0.5 -left-1 w-1 h-1 bg-linear-to-br from-success to-success rotate-45 animate-pulse delay-225">
 </div>
-<div class="absolute -top-3 -right-6 w-3 h-3 bg-linear-to-br from-green-400 to-emerald-500 rotate-45 animate-spin delay-300">
+<div class="absolute -top-3 -right-6 w-3 h-3 bg-linear-to-br from-success to-success rotate-45 animate-spin delay-300">
 </div>
-<div class="absolute -top-1 -right-3 w-1.5 h-1.5 bg-linear-to-br from-emerald-400 to-cyan-500 rounded-full animate-bounce delay-375">
+<div class="absolute -top-1 -right-3 w-1.5 h-1.5 bg-linear-to-br from-success to-info rounded-full animate-bounce delay-375">
 </div>
-<div class="absolute -bottom-2 -right-3 w-2.5 h-2.5 bg-linear-to-br from-emerald-400 to-teal-500 rounded-full animate-pulse delay-450">
+<div class="absolute -bottom-2 -right-3 w-2.5 h-2.5 bg-linear-to-br from-success to-primary rounded-full animate-pulse delay-450">
 </div>
-<div class="absolute -bottom-1 -left-1 w-2 h-2 bg-linear-to-br from-teal-400 to-blue-500 rotate-45 animate-spin delay-525">
+<div class="absolute -bottom-1 -left-1 w-2 h-2 bg-linear-to-br from-primary to-primary rotate-45 animate-spin delay-525">
 </div>
-<div class="absolute -top-2 left-2 w-0.5 h-0.5 bg-blue-300 rounded-full animate-ping delay-600">
+<div class="absolute -top-2 left-2 w-0.5 h-0.5 bg-primary rounded-full animate-ping delay-600">
 </div>
-<div class="absolute -top-1 right-2 w-1 h-1 bg-teal-300 rounded-full animate-pulse delay-675">
+<div class="absolute -top-1 right-2 w-1 h-1 bg-primary rounded-full animate-pulse delay-675">
 </div>
-<div class="absolute bottom-0 left-4 w-0.5 h-0.5 bg-green-300 rounded-full animate-bounce delay-750">
+<div class="absolute bottom-0 left-4 w-0.5 h-0.5 bg-success rounded-full animate-bounce delay-750">
 </div>
-<div class="absolute bottom-1 right-4 w-0.5 h-0.5 bg-emerald-300 rounded-full animate-pulse delay-825">
+<div class="absolute bottom-1 right-4 w-0.5 h-0.5 bg-success rounded-full animate-pulse delay-825">
 </div>
-<div class="absolute top-2 -left-2 w-0.5 h-0.5 bg-cyan-300 rounded-full animate-ping delay-900">
+<div class="absolute top-2 -left-2 w-0.5 h-0.5 bg-info rounded-full animate-ping delay-900">
 </div>
-<div class="absolute top-2 -right-2 w-1 h-1 bg-teal-300 rounded-full animate-bounce delay-975">
-</div>
-</div>
-</div>
-<div class="absolute -top-10 -left-10 w-3 h-3 bg-linear-to-br from-pink-400 to-purple-500 rounded-full animate-float">
-</div>
-<div class="absolute -top-8 -left-6 w-1.5 h-1.5 bg-linear-to-br from-purple-400 to-pink-500 rotate-45 animate-spin delay-100">
-</div>
-<div class="absolute -top-6 -left-12 w-2 h-2 bg-linear-to-br from-pink-400 to-red-500 rounded-full animate-bounce delay-200">
-</div>
-<div class="absolute -top-10 -right-10 w-2.5 h-2.5 bg-linear-to-br from-blue-400 to-cyan-500 rounded-full animate-ping delay-300">
-</div>
-<div class="absolute -top-6 -right-14 w-1 h-1 bg-linear-to-br from-cyan-400 to-blue-500 rotate-45 animate-pulse delay-400">
-</div>
-<div class="absolute -top-4 -right-8 w-3 h-3 bg-linear-to-br from-blue-400 to-purple-500 rounded-full animate-bounce delay-500">
-</div>
-<div class="absolute -bottom-10 -left-10 w-2 h-2 bg-linear-to-br from-yellow-400 to-orange-500 rounded-full animate-pulse delay-600">
-</div>
-<div class="absolute -bottom-8 -left-14 w-1.5 h-1.5 bg-linear-to-br from-orange-400 to-red-500 rotate-45 animate-spin delay-700">
-</div>
-<div class="absolute -bottom-6 -left-6 w-2.5 h-2.5 bg-linear-to-br from-yellow-400 to-pink-500 rounded-full animate-float delay-800">
-</div>
-<div class="absolute -bottom-10 -right-10 w-3 h-3 bg-linear-to-br from-green-400 to-teal-500 rotate-45 animate-bounce delay-900">
-</div>
-<div class="absolute -bottom-8 -right-6 w-1 h-1 bg-linear-to-br from-teal-400 to-cyan-500 rounded-full animate-ping delay-1000">
-</div>
-<div class="absolute -bottom-6 -right-14 w-2 h-2 bg-linear-to-br from-emerald-400 to-green-500 rounded-full animate-pulse delay-1100">
-</div>
-<div class="absolute -top-12 left-0 w-0.5 h-0.5 bg-yellow-300 rounded-full animate-ping delay-1200">
-</div>
-<div class="absolute -top-2 -left-16 w-1 h-1 bg-pink-300 rounded-full animate-bounce delay-1300">
-</div>
-<div class="absolute top-2 -right-18 w-0.5 h-0.5 bg-blue-300 rounded-full animate-pulse delay-1400">
-</div>
-<div class="absolute -bottom-12 right-0 w-1 h-1 bg-purple-300 rounded-full animate-float delay-1500">
-</div>
-<div class="absolute -bottom-2 -right-16 w-0.5 h-0.5 bg-green-300 rounded-full animate-ping delay-1600">
-</div>
-<div class="absolute bottom-2 -left-18 w-1 h-1 bg-teal-300 rounded-full animate-bounce delay-1700">
+<div class="absolute top-2 -right-2 w-1 h-1 bg-primary rounded-full animate-bounce delay-975">
 </div>
 </div>
-<div class="h-1 w-24 mx-auto my-3 bg-linear-to-r from-blue-500 to-pink-500 rounded-full">
 </div>
-<p class="mt-4 text-base sm:text-lg font-light text-gray-600 dark:text-gray-300 max-w-lg mx-auto text-center tracking-widest leading-relaxed">AI帮帮忙，像素创意更简单
+<div class="absolute -top-10 -left-10 w-3 h-3 bg-linear-to-br from-accent to-secondary rounded-full animate-float">
+</div>
+<div class="absolute -top-8 -left-6 w-1.5 h-1.5 bg-linear-to-br from-secondary to-accent rotate-45 animate-spin delay-100">
+</div>
+<div class="absolute -top-6 -left-12 w-2 h-2 bg-linear-to-br from-accent to-error rounded-full animate-bounce delay-200">
+</div>
+<div class="absolute -top-10 -right-10 w-2.5 h-2.5 bg-linear-to-br from-primary to-info rounded-full animate-ping delay-300">
+</div>
+<div class="absolute -top-6 -right-14 w-1 h-1 bg-linear-to-br from-info to-primary rotate-45 animate-pulse delay-400">
+</div>
+<div class="absolute -top-4 -right-8 w-3 h-3 bg-linear-to-br from-primary to-secondary rounded-full animate-bounce delay-500">
+</div>
+<div class="absolute -bottom-10 -left-10 w-2 h-2 bg-linear-to-br from-warning to-secondary rounded-full animate-pulse delay-600">
+</div>
+<div class="absolute -bottom-8 -left-14 w-1.5 h-1.5 bg-linear-to-br from-secondary to-error rotate-45 animate-spin delay-700">
+</div>
+<div class="absolute -bottom-6 -left-6 w-2.5 h-2.5 bg-linear-to-br from-warning to-accent rounded-full animate-float delay-800">
+</div>
+<div class="absolute -bottom-10 -right-10 w-3 h-3 bg-linear-to-br from-success to-primary rotate-45 animate-bounce delay-900">
+</div>
+<div class="absolute -bottom-8 -right-6 w-1 h-1 bg-linear-to-br from-primary to-info rounded-full animate-ping delay-1000">
+</div>
+<div class="absolute -bottom-6 -right-14 w-2 h-2 bg-linear-to-br from-success to-success rounded-full animate-pulse delay-1100">
+</div>
+<div class="absolute -top-12 left-0 w-0.5 h-0.5 bg-warning rounded-full animate-ping delay-1200">
+</div>
+<div class="absolute -top-2 -left-16 w-1 h-1 bg-accent rounded-full animate-bounce delay-1300">
+</div>
+<div class="absolute top-2 -right-18 w-0.5 h-0.5 bg-primary rounded-full animate-pulse delay-1400">
+</div>
+<div class="absolute -bottom-12 right-0 w-1 h-1 bg-secondary rounded-full animate-float delay-1500">
+</div>
+<div class="absolute -bottom-2 -right-16 w-0.5 h-0.5 bg-success rounded-full animate-ping delay-1600">
+</div>
+<div class="absolute bottom-2 -left-18 w-1 h-1 bg-primary rounded-full animate-bounce delay-1700">
+</div>
+</div>
+<div class="h-1 w-24 mx-auto my-3 bg-linear-to-r from-primary to-accent rounded-full">
+</div>
+<p class="mt-4 text-base sm:text-lg font-light text-base-content/70 max-w-lg mx-auto text-center tracking-widest leading-relaxed">AI帮帮忙，像素创意更简单
             </p>
 </div>
 </header>
 <main ref="mainRef" class="w-full md:max-w-4xl flex flex-col items-center space-y-5 sm:space-y-6 relative overflow-hidden">
-<div @drop='handleDrop' @dragover='handleDragOver' @dragenter='handleDragOver' @click='isMounted && triggerFileInput()' :class='`border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-6 sm:p-8 text-center ${isMounted ? "cursor-pointer hover:border-blue-400 dark:hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-gray-800" : "cursor-wait"} transition-all duration-300 w-full md:max-w-md flex flex-col justify-center items-center shadow-sm hover:shadow-md`' :style='{ minHeight: "130px" }'>
-<svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 sm:h-12 sm:w-12 text-gray-400 dark:text-gray-500 mb-2 sm:mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" :stroke-width='1'>
+<div @drop='handleDrop' @dragover='handleDragOver' @dragenter='handleDragOver' @click='isMounted && triggerFileInput()' :class='`border-2 border-dashed border-base-300  rounded-lg p-6 sm:p-8 text-center ${isMounted ? "cursor-pointer hover:border-primary  hover:bg-primary/10 " : "cursor-wait"} transition-all duration-300 w-full md:max-w-md flex flex-col justify-center items-center shadow-sm hover:shadow-md`' :style='{ minHeight: "130px" }'>
+<svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 sm:h-12 sm:w-12 text-base-content/55 mb-2 sm:mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" :stroke-width='1'>
 <path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
 </svg>
-<p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400">拖放图片到此处，或
-              <span class="font-medium text-blue-600 dark:text-blue-400">点击选择文件</span>
+<p class="text-xs sm:text-sm text-base-content/70">拖放图片到此处，或
+              <span class="font-medium text-primary">点击选择文件</span>
 </p>
-<p class="text-xs text-gray-400 dark:text-gray-500 mt-1">支持 JPG, PNG 图片格式，或 CSV 数据文件
+<p class="text-xs text-base-content/55 mt-1">支持 JPG, PNG 图片格式，或 CSV 数据文件
             </p>
 </div>
 <template v-if='!originalImageSrc'>
-<div class="w-full md:max-w-md bg-linear-to-br from-blue-50 to-indigo-50 dark:from-gray-800 dark:to-gray-700 p-3 rounded-lg border border-blue-100 dark:border-gray-600 shadow-sm">
-<p class="text-xs text-indigo-700 dark:text-indigo-300 flex items-start">
-<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1.5 shrink-0 text-blue-500 dark:text-blue-400 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+<div class="w-full md:max-w-md bg-linear-to-br from-primary/10 to-primary/10 p-3 rounded-lg border border-primary/30 shadow-sm">
+<p class="text-xs text-primary flex items-start">
+<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1.5 shrink-0 text-primary mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 <path stroke-linecap="round" stroke-linejoin="round" :stroke-width='2' d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
 </svg>
-<span class="text-indigo-700 dark:text-indigo-300">小贴士：使用像素图进行转换前，请确保图片的边缘吻合像素格子的边界线，这样可以获得更精确的切割效果和更好的成品。
+<span class="text-primary">小贴士：使用像素图进行转换前，请确保图片的边缘吻合像素格子的边界线，这样可以获得更精确的切割效果和更好的成品。
                 </span>
 </p>
 </div>
@@ -2242,48 +2244,48 @@ import ImageCropperModal from "../components/ImageCropperModal.vue";
 <template v-if='originalImageSrc'>
 <div class="w-full flex flex-col items-center space-y-5 sm:space-y-6">
 <template v-if='!isManualColoringMode'>
-<div class="w-full md:max-w-2xl grid grid-cols-1 sm:grid-cols-2 gap-4 bg-white dark:bg-gray-800 p-4 sm:p-5 rounded-xl shadow-md border border-gray-100 dark:border-gray-700">
+<div class="w-full md:max-w-2xl grid grid-cols-1 sm:grid-cols-2 gap-4 bg-base-100 p-4 sm:p-5 rounded-xl shadow-md border border-base-300">
 <div class="flex-1">
-<label for="granularityInput" class="block text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2">横轴切割数量 (10-300):
+<label for="granularityInput" class="block text-xs sm:text-sm font-medium text-base-content mb-1.5 sm:mb-2">横轴切割数量 (10-300):
                     </label>
 <div class="flex items-center gap-2">
-<input type="number" id="granularityInput" :value='granularityInput' @change='handleGranularityInputChange' class="w-full p-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 h-9 shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500" min="10" max="300" />
+<input type="number" id="granularityInput" :value='granularityInput' @change='handleGranularityInputChange' class="w-full p-1.5 border border-base-300 rounded-md text-sm focus:ring-primary focus:border-primary h-9 shadow-sm bg-base-100 text-base-content placeholder-base-content/45" min="10" max="300" />
 </div>
 </div>
 <div class="flex-1">
-<label for="similarityThresholdInput" class="block text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2">颜色合并阈值 (0-100):
+<label for="similarityThresholdInput" class="block text-xs sm:text-sm font-medium text-base-content mb-1.5 sm:mb-2">颜色合并阈值 (0-100):
                     </label>
 <div class="flex items-center gap-2">
-<input type="number" id="similarityThresholdInput" :value='similarityThresholdInput' @change='handleSimilarityThresholdInputChange' class="w-full p-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 h-9 shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500" min="0" max="100" />
+<input type="number" id="similarityThresholdInput" :value='similarityThresholdInput' @change='handleSimilarityThresholdInputChange' class="w-full p-1.5 border border-base-300 rounded-md text-sm focus:ring-primary focus:border-primary h-9 shadow-sm bg-base-100 text-base-content placeholder-base-content/45" min="0" max="100" />
 </div>
 </div>
 <div class="sm:col-span-2 flex flex-wrap items-center gap-2">
-<button @click='handleConfirmParameters' class="h-9 bg-blue-500 hover:bg-blue-600 text-white text-sm px-3 rounded-md whitespace-nowrap transition-colors duration-200 shadow-sm">应用数字
+<button @click='handleConfirmParameters' class="h-9 bg-primary hover:bg-primary text-primary-content text-sm px-3 rounded-md whitespace-nowrap transition-colors duration-200 shadow-sm">应用数字
                     </button>
-<button @click='handleAutoRemoveBackground' :disabled='!mappedPixelData || !gridDimensions' class="inline-flex items-center justify-center h-9 px-3 text-sm rounded-md border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-200 hover:bg-blue-100 dark:hover:bg-blue-800/40 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap">一键去背景
+<button @click='handleAutoRemoveBackground' :disabled='!mappedPixelData || !gridDimensions' class="inline-flex items-center justify-center h-9 px-3 text-sm rounded-md border border-primary/30 bg-primary/10 text-primary hover:bg-primary/10 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap">一键去背景
                     </button>
 </div>
 <div class="sm:col-span-2">
-<label for="pixelationModeSelect" class="block text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2">处理模式:
+<label for="pixelationModeSelect" class="block text-xs sm:text-sm font-medium text-base-content mb-1.5 sm:mb-2">处理模式:
                     </label>
 <div class="flex items-center gap-2">
-<select id="pixelationModeSelect" :value='pixelationMode' @change='handlePixelationModeChange' class="w-full p-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 h-9 shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200">
-<option :value='PixelationMode.Dominant' class="bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200">卡通 (主色)
+<select id="pixelationModeSelect" :value='pixelationMode' @change='handlePixelationModeChange' class="w-full p-1.5 border border-base-300 rounded-md text-sm focus:ring-primary focus:border-primary h-9 shadow-sm bg-base-100 text-base-content">
+<option :value='PixelationMode.Dominant' class="bg-base-100 text-base-content">卡通 (主色)
                         </option>
-<option :value='PixelationMode.Average' class="bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200">真实 (平均)
+<option :value='PixelationMode.Average' class="bg-base-100 text-base-content">真实 (平均)
                         </option>
 </select>
 </div>
 </div>
 <div class="sm:col-span-2">
-<label for="paletteSizeSelect" class="block text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2">处理色板:</label>
-<select id="paletteSizeSelect" v-model.number="paletteSize" class="w-full p-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 h-9 shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200">
+<label for="paletteSizeSelect" class="block text-xs sm:text-sm font-medium text-base-content mb-1.5 sm:mb-2">处理色板:</label>
+<select id="paletteSizeSelect" v-model.number="paletteSize" class="w-full p-1.5 border border-base-300 rounded-md text-sm focus:ring-primary focus:border-primary h-9 shadow-sm bg-base-100 text-base-content">
 <option :value="291">MARD 291 色（全部）</option>
 <option :value="221">MARD 221 色（标准）</option>
 </select>
 </div>
 <div class="sm:col-span-2">
-<button @click='() => isColorSystemCollapsed = !isColorSystemCollapsed' class="flex items-center justify-between w-full text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2">
+<button @click='() => isColorSystemCollapsed = !isColorSystemCollapsed' class="flex items-center justify-between w-full text-xs sm:text-sm font-medium text-base-content mb-1.5 sm:mb-2">
 <span>色号系统:</span>
 <svg xmlns="http://www.w3.org/2000/svg" :class='`h-4 w-4 transition-transform duration-200 ${isColorSystemCollapsed ? "rotate-0" : "rotate-180"}`' fill="none" viewBox="0 0 24 24" stroke="currentColor">
 <path stroke-linecap="round" stroke-linejoin="round" :stroke-width='2' d="M19 9l-7 7-7-7" />
@@ -2293,18 +2295,18 @@ import ImageCropperModal from "../components/ImageCropperModal.vue";
 <div class="space-y-3">
 <div class="flex flex-wrap gap-2">
 <template v-for='(option) in colorSystemOptions' :key='option.key'>
-<button @click='() => selectedColorSystem = option.key as ColorSystem' :class='`px-3 py-2 text-sm rounded-lg border transition-all duration-200 shrink-0 ${selectedColorSystem === option.key     ? "bg-blue-500 text-white border-blue-500 shadow-md transform scale-105"     : "bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-gray-600"}`'>{{ option.name }}</button>
+<button @click='() => selectedColorSystem = option.key as ColorSystem' :class='`px-3 py-2 text-sm rounded-lg border transition-all duration-200 shrink-0 ${selectedColorSystem === option.key     ? "bg-primary text-primary-content border-primary shadow-md transform scale-105"     : "bg-base-100  text-base-content  border-base-300  hover:border-primary  hover:bg-primary/10 "}`'>{{ option.name }}</button>
 </template>
 </div>
 <div class="mt-3">
-<button @click='() => isCustomPaletteEditorOpen = true' class="w-full py-2.5 px-3 flex items-center justify-center gap-2 bg-linear-to-br from-blue-500 to-purple-500 text-white font-medium rounded-lg shadow-sm transition-all duration-200 hover:shadow-md hover:from-blue-600 hover:to-purple-600">
+<button @click='() => isCustomPaletteEditorOpen = true' class="w-full py-2.5 px-3 flex items-center justify-center gap-2 bg-linear-to-br from-primary to-secondary text-primary-content font-medium rounded-lg shadow-sm transition-all duration-200 hover:shadow-md hover:from-primary hover:to-secondary">
 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
 <path fill-rule="evenodd" d="M4 2a2 2 0 00-2 2v11a3 3 0 106 0V4a2 2 0 00-2-2H4zm1 14a1 1 0 100-2 1 1 0 000 2zm5-1.757l4.9-4.9a2 2 0 000-2.828L13.485 5.1a2 2 0 00-2.828 0L10 5.757v8.486zM16 18H9.071l6-6H16a2 2 0 012 2v2a2 2 0 01-2 2z" clip-rule="evenodd" />
 </svg>管理色板 (
                             {{ availableBeadPalette.filter((color) => customPaletteSelections[color.hex.toUpperCase()]).length }}色)
                           </button>
 <template v-if='isCustomPalette'>
-<p class="text-xs text-center text-blue-500 dark:text-blue-400 mt-1.5">当前使用自定义色板
+<p class="text-xs text-center text-primary mt-1.5">当前使用自定义色板
                             </p>
 </template>
 </div>
@@ -2314,8 +2316,8 @@ import ImageCropperModal from "../components/ImageCropperModal.vue";
 </div>
 </template>
 <template v-if='isCustomPaletteEditorOpen'>
-<div class="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm z-50 flex justify-center items-center p-4">
-<div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+<div class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex justify-center items-center p-4">
+<div class="bg-base-100 rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
 <input type="file" accept=".json" ref="importPaletteInputRef" @change='handleImportPaletteFile' class="hidden" />
 <div class="p-4 sm:p-6 flex-1 overflow-y-auto"> <CustomPaletteEditor :allColors='availableBeadPalette' :currentSelections='customPaletteSelections' :onSelectionChange='handleSelectionChange' :onSaveCustomPalette='handleSaveCustomPalette' :onClose='() => isCustomPaletteEditorOpen = false' :onExportCustomPalette='handleExportCustomPalette' :onImportCustomPalette='triggerImportPalette' :selectedColorSystem='selectedColorSystem' />
 </div>
@@ -2326,18 +2328,18 @@ import ImageCropperModal from "../components/ImageCropperModal.vue";
 <canvas ref="originalCanvasRef" class="hidden">
 </canvas>
 <template v-if='isManualColoringMode && mappedPixelData && gridDimensions'>
-<div class="w-full mb-4 p-3 bg-blue-50 dark:bg-gray-800 rounded-lg shadow-sm border border-blue-100 dark:border-gray-700">
+<div class="w-full mb-4 p-3 bg-primary/10 rounded-lg shadow-sm border border-primary/30">
 <div class="flex justify-center">
-<div class="bg-blue-50 dark:bg-gray-700 border border-blue-100 dark:border-gray-600 rounded-lg p-2 flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3 text-xs text-gray-600 dark:text-gray-300 w-full sm:w-auto">
+<div class="bg-primary/10 border border-primary/30 rounded-lg p-2 flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3 text-xs text-base-content/70 w-full sm:w-auto">
 <div class="flex items-center gap-1 w-full sm:w-auto">
-<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-blue-500 dark:text-blue-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-primary shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 <path stroke-linecap="round" stroke-linejoin="round" :stroke-width='2' d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
 </svg>
 <span>使用右上角菜单操作</span>
 </div>
-<span class="hidden sm:inline text-gray-300 dark:text-gray-500">|</span>
+<span class="hidden sm:inline text-base-content/55">|</span>
 <div class="flex items-center gap-1 w-full sm:w-auto">
-<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-blue-500 dark:text-blue-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-primary shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 <path stroke-linecap="round" stroke-linejoin="round" :stroke-width='2' d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
 </svg>
 <span>推荐电脑操作，上色更精准</span>
@@ -2346,11 +2348,11 @@ import ImageCropperModal from "../components/ImageCropperModal.vue";
 </div>
 </div>
 </template>
-<div class="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-md border border-gray-100 dark:border-gray-700">
+<div class="bg-base-100 p-4 rounded-xl shadow-md border border-base-300">
 <template v-if='gridDimensions && gridDimensions.N > 100'>
-<div class="mb-3 p-2 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-lg text-xs text-blue-700 dark:text-blue-300 text-center">
+<div class="mb-3 p-2 bg-primary/10 border border-primary/30 rounded-lg text-xs text-primary text-center">
 <div class="flex items-center justify-center gap-1">
-<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-blue-500 dark:text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 <path stroke-linecap="round" stroke-linejoin="round" :stroke-width='2' d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
 </svg>
 <span>高精度网格 ({{ gridDimensions.N }}×{{ gridDimensions.M }}) -
@@ -2359,7 +2361,7 @@ import ImageCropperModal from "../components/ImageCropperModal.vue";
 </div>
 </div>
 </template>
-<div class="flex justify-center mb-3 sm:mb-4 bg-gray-100 dark:bg-gray-700 p-2 rounded-lg overflow-x-auto overflow-y-hidden" :style='{ minHeight: "150px" }'>
+<div class="flex justify-center mb-3 sm:mb-4 bg-base-200 p-2 rounded-lg overflow-x-auto overflow-y-hidden" :style='{ minHeight: "150px" }'>
 <PixelatedPreviewCanvas :canvasRef='canvasHandle' :mappedPixelData='mappedPixelData' :gridDimensions='gridDimensions' :isManualColoringMode='isManualColoringMode' :onInteraction='handleCanvasInteraction' :highlightColorKey='highlightColorKey' :onHighlightComplete='handleHighlightComplete' />
 </div>
 </div>
@@ -2367,56 +2369,56 @@ import ImageCropperModal from "../components/ImageCropperModal.vue";
 </div>
 </template>
 <template v-if='!isManualColoringMode &&     originalImageSrc &&     colorCounts &&     Object.keys(colorCounts).length > 0'>
-<div class="w-full md:max-w-2xl mt-6 bg-white dark:bg-gray-800 p-4 rounded-lg shadow border border-gray-100 dark:border-gray-700 color-stats-panel">
-<h3 class="text-lg font-semibold mb-1 text-gray-700 dark:text-gray-200 text-center">去除杂色
+<div class="w-full md:max-w-2xl mt-6 bg-base-100 p-4 rounded-lg shadow border border-base-300 color-stats-panel">
+<h3 class="text-lg font-semibold mb-1 text-base-content text-center">去除杂色
                 </h3>
-<p class="text-xs text-center text-gray-500 dark:text-gray-400 mb-3">点击下方列表中的颜色可将其从可用列表中排除。总计: {{ totalBeadCount }}颗
+<p class="text-xs text-center text-base-content/70 mb-3">点击下方列表中的颜色可将其从可用列表中排除。总计: {{ totalBeadCount }}颗
                 </p>
 <ul class="space-y-1 max-h-60 overflow-y-auto pr-2 text-sm">
 <template v-for='({ hexKey, displayColorKey, isExcluded, count, colorHex }) in gridColorStats' :key='hexKey'>
-<li @click='() => handleToggleExcludeColor(hexKey)' :class='`flex items-center justify-between p-1.5 rounded cursor-pointer transition-colors ${isExcluded     ? "bg-red-100 dark:bg-red-900/50 hover:bg-red-200 dark:hover:bg-red-800/60 opacity-60 dark:opacity-70"     : "hover:bg-gray-100 dark:hover:bg-gray-700"}`' :title='isExcluded     ? `点击恢复 ${displayColorKey}`     : `点击排除 ${displayColorKey}`'>
+<li @click='() => handleToggleExcludeColor(hexKey)' :class='`flex items-center justify-between p-1.5 rounded cursor-pointer transition-colors ${isExcluded     ? "bg-error/10  hover:bg-error/20  opacity-60 dark:opacity-70"     : "hover:bg-base-200 "}`' :title='isExcluded     ? `点击恢复 ${displayColorKey}`     : `点击排除 ${displayColorKey}`'>
 <div :class='`flex items-center space-x-2 ${isExcluded ? "line-through" : ""}`'>
-<span class="inline-block w-4 h-4 rounded border border-gray-400 dark:border-gray-500 shrink-0" :style='{     backgroundColor: isExcluded ? "#666" : colorHex, }'>
+<span class="inline-block w-4 h-4 rounded border border-base-300 shrink-0" :style='{     backgroundColor: isExcluded ? "#666" : colorHex, }'>
 </span>
-<span :class='`font-mono font-medium ${isExcluded ? "text-red-700 dark:text-red-400" : "text-gray-800 dark:text-gray-200"}`'>{{ displayColorKey }}</span>
+<span :class='`font-mono font-medium ${isExcluded ? "text-error " : "text-base-content "}`'>{{ displayColorKey }}</span>
 </div>
-<span :class='`text-xs ${isExcluded ? "text-red-600 dark:text-red-400 line-through" : "text-gray-600 dark:text-gray-300"}`'>{{ count }}颗
+<span :class='`text-xs ${isExcluded ? "text-error  line-through" : "text-base-content/70 "}`'>{{ count }}颗
                           </span>
 </li>
 </template>
 </ul>
 <template v-if='excludedColorKeys.size > 0'>
 <div class="mt-3">
-<button @click='showExcludedColors = !showExcludedColors' class="w-full text-xs py-1.5 px-2 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded hover:bg-gray-300 dark:hover:bg-gray-500 transition-colors flex items-center justify-between">
+<button @click='showExcludedColors = !showExcludedColors' class="w-full text-xs py-1.5 px-2 bg-base-200 text-base-content rounded hover:bg-base-300 transition-colors flex items-center justify-between">
 <span>已排除的颜色 ({{ excludedColorKeys.size }})</span>
-<svg xmlns="http://www.w3.org/2000/svg" :class='`h-4 w-4 text-gray-500 dark:text-gray-400 transform transition-transform ${showExcludedColors ? "rotate-180" : ""}`' fill="none" viewBox="0 0 24 24" stroke="currentColor">
+<svg xmlns="http://www.w3.org/2000/svg" :class='`h-4 w-4 text-base-content/70  transform transition-transform ${showExcludedColors ? "rotate-180" : ""}`' fill="none" viewBox="0 0 24 24" stroke="currentColor">
 <path stroke-linecap="round" stroke-linejoin="round" :stroke-width='2' d="M19 9l-7 7-7-7" />
 </svg>
 </button>
 <template v-if='showExcludedColors'>
-<div class="mt-2 border border-gray-200 dark:border-gray-700 rounded-md p-2 bg-gray-100 dark:bg-gray-800">
+<div class="mt-2 border border-base-300 rounded-md p-2 bg-base-200">
 <div class="max-h-40 overflow-y-auto">
 <template v-if='Array.from(excludedColorKeys).length > 0'>
 <ul class="space-y-1">
 <template v-for='({ hexKey, colorData }) in excludedColors' :key='hexKey'>
-<li class="flex justify-between items-center p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded">
+<li class="flex justify-between items-center p-1 hover:bg-base-200 rounded">
 <div class="flex items-center space-x-2">
-<span class="inline-block w-4 h-4 rounded border border-gray-400 dark:border-gray-500 shrink-0" :style='{     backgroundColor: colorData?.hex || hexKey, }'>
+<span class="inline-block w-4 h-4 rounded border border-base-300 shrink-0" :style='{     backgroundColor: colorData?.hex || hexKey, }'>
 </span>
-<span class="font-mono text-xs text-gray-800 dark:text-gray-200">{{ getColorKeyByHex(hexKey, selectedColorSystem) }}</span>
+<span class="font-mono text-xs text-base-content">{{ getColorKeyByHex(hexKey, selectedColorSystem) }}</span>
 </div>
-<button @click='handleToggleExcludeColor(hexKey)' class="text-xs py-0.5 px-2 bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800/40">恢复
+<button @click='handleToggleExcludeColor(hexKey)' class="text-xs py-0.5 px-2 bg-primary/10 text-primary rounded hover:bg-primary/20">恢复
                                       </button>
 </li>
 </template>
 </ul>
 </template>
 <template v-else>
-<p class="text-xs text-center text-gray-500 dark:text-gray-400 py-2">没有排除的颜色
+<p class="text-xs text-center text-base-content/70 py-2">没有排除的颜色
                             </p>
 </template>
 </div>
-<button @click='restoreAllExcludedColors' class="mt-2 w-full text-xs py-1 px-2 bg-blue-500 hover:bg-blue-600 text-white rounded transition-colors">一键恢复所有颜色
+<button @click='restoreAllExcludedColors' class="mt-2 w-full text-xs py-1 px-2 bg-primary hover:bg-primary text-primary-content rounded transition-colors">一键恢复所有颜色
                         </button>
 </div>
 </template>
@@ -2424,18 +2426,18 @@ import ImageCropperModal from "../components/ImageCropperModal.vue";
 </template>
 </div>
 </template> <template v-if='!isManualColoringMode &&     originalImageSrc &&     activeBeadPalette.length === 0 &&     excludedColorKeys.size > 0'>
-<div class="w-full md:max-w-2xl mt-6 bg-yellow-100 dark:bg-yellow-900/50 p-4 rounded-lg shadow border border-yellow-200 dark:border-yellow-800/60 text-center text-sm text-yellow-800 dark:text-yellow-300">当前可用颜色过少或为空。请在上方统计列表中查看已排除的颜色并恢复部分，或更换色板。
+<div class="w-full md:max-w-2xl mt-6 bg-warning/10 p-4 rounded-lg shadow border border-warning/30 text-center text-sm text-warning">当前可用颜色过少或为空。请在上方统计列表中查看已排除的颜色并恢复部分，或更换色板。
                 <template v-if='excludedColorKeys.size > 0'>
-<button @click='showExcludedColorList' class="mt-2 ml-2 text-xs py-1 px-2 bg-yellow-200 dark:bg-yellow-700/60 text-yellow-900 dark:text-yellow-200 rounded hover:bg-yellow-300 dark:hover:bg-yellow-600/70 transition-colors">查看已排除颜色 ({{ excludedColorKeys.size }})
+<button @click='showExcludedColorList' class="mt-2 ml-2 text-xs py-1 px-2 bg-warning/20 text-warning rounded hover:bg-warning transition-colors">查看已排除颜色 ({{ excludedColorKeys.size }})
                   </button>
 </template>
 </div>
 </template>
 <template v-if='!isManualColoringMode && originalImageSrc && mappedPixelData && gridDimensions'>
-<div class="w-full md:max-w-2xl mt-4 space-y-3"> <button @click='() => {     isManualColoringMode = true;     selectedColor = null;     tooltipData = null; }' :class='`w-full py-2.5 px-4 text-sm sm:text-base rounded-lg transition-all duration-300 flex items-center justify-center gap-2 bg-linear-to-br from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white shadow-md hover:shadow-lg hover:translate-y-[-1px]`'>
+<div class="w-full md:max-w-2xl mt-4 space-y-3"> <button @click='() => {     isManualColoringMode = true;     selectedColor = null;     tooltipData = null; }' :class='`w-full py-2.5 px-4 text-sm sm:text-base rounded-lg transition-all duration-300 flex items-center justify-center gap-2 bg-linear-to-br from-primary to-primary hover:from-primary hover:to-primary text-primary-content shadow-md hover:shadow-lg hover:translate-y-[-1px]`'>
 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"> <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" /> </svg>进入手动编辑模式
               </button>
-<button @click='handleEnterFocusMode' :class='`w-full py-2.5 px-4 text-sm sm:text-base rounded-lg transition-all duration-300 flex items-center justify-center gap-2 bg-linear-to-br from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white shadow-md hover:shadow-lg hover:translate-y-[-1px]`'>
+<button @click='handleEnterFocusMode' :class='`w-full py-2.5 px-4 text-sm sm:text-base rounded-lg transition-all duration-300 flex items-center justify-center gap-2 bg-linear-to-br from-secondary to-secondary hover:from-secondary hover:to-secondary text-secondary-content shadow-md hover:shadow-lg hover:translate-y-[-1px]`'>
 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 <path stroke-linecap="round" stroke-linejoin="round" :stroke-width='2' d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
 <path stroke-linecap="round" stroke-linejoin="round" :stroke-width='2' d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
@@ -2444,7 +2446,7 @@ import ImageCropperModal from "../components/ImageCropperModal.vue";
 </div>
 </template> <template v-if='!isManualColoringMode && originalImageSrc && mappedPixelData'>
 <div class="w-full md:max-w-2xl mt-4">
-<button @click='() => isDownloadSettingsOpen = true' :disabled='!mappedPixelData ||     !gridDimensions ||     gridDimensions.N === 0 ||     gridDimensions.M === 0 ||     activeBeadPalette.length === 0' class="w-full py-2.5 px-4 bg-linear-to-br from-green-500 to-green-600 text-white text-sm sm:text-base rounded-lg hover:from-green-600 hover:to-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition-all duration-300 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-lg hover:translate-y-[-1px] disabled:hover:translate-y-0 disabled:hover:shadow-md">
+<button @click='() => isDownloadSettingsOpen = true' :disabled='!mappedPixelData ||     !gridDimensions ||     gridDimensions.N === 0 ||     gridDimensions.M === 0 ||     activeBeadPalette.length === 0' class="w-full py-2.5 px-4 bg-linear-to-br from-success to-success text-success-content text-sm sm:text-base rounded-lg hover:from-success hover:to-success focus:outline-none focus:ring-2 focus:ring-success focus:ring-offset-2 transition-all duration-300 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-lg hover:translate-y-[-1px] disabled:hover:translate-y-0 disabled:hover:shadow-md">
 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" :stroke-width='2'>
 <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
 </svg>下载拼豆图纸
@@ -2469,9 +2471,9 @@ import ImageCropperModal from "../components/ImageCropperModal.vue";
 <MagnifierTool :isActive='isMagnifierActive' :onToggle='handleToggleMagnifier' :mappedPixelData='mappedPixelData' :gridDimensions='gridDimensions' :selectedColor='selectedColor' :selectedColorSystem='selectedColorSystem' :onPixelEdit='handleMagnifierPixelEdit' :cellSize='gridDimensions     ? Math.min(6, Math.max(4, 500 / Math.max(gridDimensions.N, gridDimensions.M)))     : 6' :selectionArea='magnifierSelectionArea' :onClearSelection='closeMagnifierSelection' :isFloatingActive='activeFloatingTool === "magnifier"' :onActivateFloating='handleActivateMagnifier' :highlightColorKey='highlightColorKey' />
 <MagnifierSelectionOverlay :isActive='isMagnifierActive && !magnifierSelectionArea' :canvasRef='canvasHandle' :gridDimensions='gridDimensions' :cellSize='gridDimensions     ? Math.min(6, Math.max(4, 500 / Math.max(gridDimensions.N, gridDimensions.M)))     : 6' :onSelectionComplete='updateMagnifierSelection' />
 </template>
-<footer class="w-full md:max-w-4xl mt-10 mb-6 py-6 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400 border-t border-gray-200 dark:border-gray-700 bg-gradient-to-b from-white to-gray-50 dark:from-gray-900 dark:to-gray-800/50 rounded-lg shadow-inner">
+<footer class="w-full md:max-w-4xl mt-10 mb-6 py-6 text-center text-xs sm:text-sm text-base-content/70 border-t border-base-300 bg-gradient-to-b from-base-100 to-base-200 rounded-lg shadow-inner">
 <div class="flex gap-3 justify-center mb-5">
-<button @click='() => isDonationModalOpen = true' class="px-6 py-2.5 bg-linear-to-br from-pink-500 to-rose-500 text-white rounded-full shadow-lg transition-all duration-300 hover:shadow-xl hover:translate-y-[-2px] flex items-center">
+<button @click='() => isDonationModalOpen = true' class="px-6 py-2.5 bg-linear-to-br from-accent to-secondary text-accent-content rounded-full shadow-lg transition-all duration-300 hover:shadow-xl hover:translate-y-[-2px] flex items-center">
 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 <path d="M18 8h1a2 2 0 0 1 2 2v1c0 1.1-.9 2-2 2h-1" fill="#f9a8d4" />
 <path d="M6 8h12v9a3 3 0 0 1-3 3H9a3 3 0 0 1-3-3V8z" fill="#f9a8d4" />
@@ -2482,7 +2484,7 @@ import ImageCropperModal from "../components/ImageCropperModal.vue";
 </svg>
 <span>请作者喝一杯奶茶</span>
 </button>
-<button @click='() => isTutorialModalOpen = true' class="px-6 py-2.5 bg-linear-to-br from-blue-500 to-indigo-500 text-white rounded-full shadow-lg transition-all duration-300 hover:shadow-xl hover:translate-y-[-2px] flex items-center">
+<button @click='() => isTutorialModalOpen = true' class="px-6 py-2.5 bg-linear-to-br from-primary to-primary text-primary-content rounded-full shadow-lg transition-all duration-300 hover:shadow-xl hover:translate-y-[-2px] flex items-center">
 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 <circle cx="12" cy="12" r="10" />
 <path d="m9 12 2 2 4-4" />
@@ -2490,20 +2492,20 @@ import ImageCropperModal from "../components/ImageCropperModal.vue";
 <span>帮助教程</span>
 </button>
 </div>
-<p class="font-medium text-gray-600 dark:text-gray-300">Mardize 拼豆底稿生成器 &copy; {{ new Date().getFullYear() }}</p>
+<p class="font-medium text-base-content/70">Mardize 拼豆底稿生成器 &copy; {{ new Date().getFullYear() }}</p>
 </footer>
 <DonationModal :isOpen='isDonationModalOpen' :onClose='() => isDonationModalOpen = false' />
 <template v-if='isTutorialModalOpen'>
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-<div class="bg-white dark:bg-gray-900 rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col">
-<div class="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-<h2 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-<svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<div class="bg-base-100 rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col">
+<div class="flex items-center justify-between px-6 py-4 border-b border-base-300">
+<h2 class="text-lg font-semibold text-base-content flex items-center gap-2">
+<svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 <circle cx="12" cy="12" r="10" />
 <path d="m9 12 2 2 4-4" />
 </svg>使用教程
                 </h2>
-<button @click='() => isTutorialModalOpen = false' class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors">
+<button @click='() => isTutorialModalOpen = false' class="text-base-content/70 hover:text-base-content transition-colors">
 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 <path stroke-linecap="round" stroke-linejoin="round" :stroke-width='2' d="M6 18L18 6M6 6l12 12" />
 </svg>
@@ -2512,39 +2514,39 @@ import ImageCropperModal from "../components/ImageCropperModal.vue";
 <div class="flex-1 overflow-auto p-6">
 <div class="space-y-6">
 <div class="space-y-2">
-<h3 class="text-md font-medium text-gray-900 dark:text-white flex items-center gap-2">
-<span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 text-sm font-medium">1
+<h3 class="text-md font-medium text-base-content flex items-center gap-2">
+<span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-primary/10 text-primary text-sm font-medium">1
                       </span>一般使用流程
                     </h3>
-<div class="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
-<p class="text-gray-700 dark:text-gray-300">上传图片 → 去掉背景 → 下载图纸 → 专心拼豆
+<div class="bg-base-200 p-4 rounded-lg border border-base-300">
+<p class="text-base-content">上传图片 → 去掉背景 → 下载图纸 → 专心拼豆
                       </p>
 </div>
 </div>
 <div class="space-y-2">
-<h3 class="text-md font-medium text-gray-900 dark:text-white flex items-center gap-2">
-<span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 text-sm font-medium">2
+<h3 class="text-md font-medium text-base-content flex items-center gap-2">
+<span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-primary/10 text-primary text-sm font-medium">2
                       </span>处理模式
                     </h3>
-<div class="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
-<p class="text-gray-700 dark:text-gray-300">可选卡通模式和真实模式，真实模式会使用更细的颜色更逼真更复杂。
+<div class="bg-base-200 p-4 rounded-lg border border-base-300">
+<p class="text-base-content">可选卡通模式和真实模式，真实模式会使用更细的颜色更逼真更复杂。
                       </p>
 </div>
 </div>
 <div class="space-y-2">
-<h3 class="text-md font-medium text-gray-900 dark:text-white flex items-center gap-2">
-<span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 text-sm font-medium">3
+<h3 class="text-md font-medium text-base-content flex items-center gap-2">
+<span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-primary/10 text-primary text-sm font-medium">3
                       </span>档案管理
                     </h3>
-<div class="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
-<p class="text-gray-700 dark:text-gray-300">下载档案可以下次直接导入使用。
+<div class="bg-base-200 p-4 rounded-lg border border-base-300">
+<p class="text-base-content">下载档案可以下次直接导入使用。
                       </p>
 </div>
 </div>
 </div>
 </div>
-<div class="flex items-center justify-end px-6 py-4 border-t border-gray-200 dark:border-gray-700">
-<button @click='() => isTutorialModalOpen = false' class="px-6 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors flex items-center gap-2">
+<div class="flex items-center justify-end px-6 py-4 border-t border-base-300">
+<button @click='() => isTutorialModalOpen = false' class="px-6 py-2 rounded-lg bg-primary text-primary-content hover:bg-primary transition-colors flex items-center gap-2">
 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 <path stroke-linecap="round" stroke-linejoin="round" :stroke-width='2' d="M5 13l4 4L19 7" />
 </svg>我知道了

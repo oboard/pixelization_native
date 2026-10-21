@@ -73,7 +73,7 @@ onBeforeUnmount(stop)
       :style="{ left: `${particle.x}px`, top: `${particle.y}px`, width: '6px', height: '12px', backgroundColor: particle.color, transform: `rotate(${particle.rotation}deg) scale(${particle.scale})`, opacity: particle.opacity, borderRadius: '1px' }" />
     <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-center animate-bounce"
       :style="{ animationDuration: '0.6s', animationTimingFunction: 'ease-out', animationFillMode: 'both' }">
-      <div class="text-4xl font-bold text-yellow-400 drop-shadow-lg animate-pulse">🎉完成🎉</div>
+      <div class="text-4xl font-bold text-warning drop-shadow-lg animate-pulse">🎉完成🎉</div>
       <div class="text-lg text-white drop-shadow-md mt-2">这个颜色拼完了！</div>
     </div>
   </div>

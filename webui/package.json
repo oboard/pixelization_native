@@ -23,6 +23,7 @@
     "@types/node": "^26.6.5",
     "@types/pngjs": "^6.0.5",
     "@vitejs/plugin-vue": "^6.0.10",
+    "daisyui": "^5.7.50",
     "globals": "^17.4.0",
     "tailwindcss": "^4.1.18",
     "typescript": "6.0.3",

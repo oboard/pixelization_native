@@ -6,7 +6,17 @@
       name="viewport"
       content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
     />
-    <meta name="theme-color" content="#000000" />
+    <meta name="theme-color" content="#f5f8f6" />
+    <script>
+      // Set the saved theme before styles paint; storage may be blocked.
+      (() => {
+        let preference = 'system';
+        try { preference = localStorage.getItem('pixelization-theme') || 'system'; } catch {}
+        const dark = preference === 'dark' || (preference !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.dataset.theme = dark ? 'forest' : 'emerald';
+        document.documentElement.classList.toggle('dark', dark);
+      })();
+    </script>
     <meta
       name="description"
       content="上传图片，调整精细度，一键生成像素画图纸，简单实用的像素画生成工具"
@@ -16,7 +26,7 @@
     <title>Mardize拼豆底稿生成器 | Perler Beads Generator</title>
   </head>
   <body
-    class="antialiased overflow-x-hidden bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100"
+    class="antialiased bg-base-200 text-base-content"
   >
     <div id="root"></div>
     <script type="module" src="/src/main.ts"></script>

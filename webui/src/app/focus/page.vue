@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ThemeSwitcher from "../../components/ThemeSwitcher.vue";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import type { MappedPixel, PaletteColor } from "../../utils/pixelation";
 import {
@@ -327,17 +328,17 @@ const progressPercentage = computed(() =>
 </script>
 
 <template>
-  <div v-if="!mappedPixelData || !gridDimensions" class="min-h-screen bg-gray-100 flex items-center justify-center">
+  <div v-if="!mappedPixelData || !gridDimensions" class="min-h-screen bg-base-200 flex items-center justify-center">
     <div class="text-center">
-      <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
-      <p class="text-gray-600">加载中...</p>
+      <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+      <p class="text-base-content/70">加载中...</p>
     </div>
   </div>
-  <div v-else class="h-screen flex flex-col bg-gray-50">
+  <div v-else class="h-screen flex flex-col bg-base-200">
     <!-- 顶部导航栏 -->
-    <header class="h-15 bg-white shadow-sm border-b border-gray-200 px-4 py-3 flex items-center justify-between">
+    <header class="min-h-15 bg-base-100 shadow-sm border-b border-base-300 px-4 py-3 flex flex-wrap gap-3 items-center justify-between">
       <button
-        class="flex items-center text-gray-600 hover:text-gray-800"
+        class="flex items-center text-base-content/70 hover:text-base-content"
         @click="handleBack"
       >
         <svg class="w-6 h-6 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -345,9 +346,11 @@ const progressPercentage = computed(() =>
         </svg>
         返回
       </button>
-      <h1 class="text-lg font-medium text-gray-800">专心拼豆（AlphaTest）</h1>
+      <ThemeSwitcher />
+      <h1 class="text-lg font-medium text-base-content">专心拼豆（AlphaTest）</h1>
       <button
-        class="text-gray-600 hover:text-gray-800"
+        class="text-base-content/70 hover:text-base-content"
+        aria-label="打开设置"
         @click="focusState.showSettingsPanel = true"
       >
         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
