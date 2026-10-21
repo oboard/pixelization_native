@@ -586,6 +586,22 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
   node scripts/pixel_annotate.mjs <command> [options]
 
 常用命令:
+  profile-threshold <序号> 单独调整一种原图颜色的覆盖阈值
+                       --class 2 --coverage 0.18（class 是原型列表序号）
+  profile-tune <序号>   保留已有修正，调整颜色覆盖阈值
+                       --coverage 0.45 --ink-coverage 0.18
+  profile-color <序号>  追加原图颜色到固定色板的映射
+                       --rgb '#151515' --index 198
+  profile-label <序号>  用 3×5 像素字体重画标签（逻辑像素坐标）
+                       --size 104 --text SCHOOLBUS --at x,y
+                       --clear x1,y1,x2,y2 --background 索引 --color 索引
+  profile-fit <序号>    裁掉手工稿空白、按比例放大并居中
+                       --size 24 --padding 1
+  profile-rays <序号>   保留中心主体，重画均匀放射线（512 坐标）
+                       --center x,y --clear 半径 --inner 半径 --outer 半径
+                       --count 14 --width 10 --color 索引 --size 78（可选）
+  profile-pop <序号>    撤销最后一项配置操作
+                       --kind strokes|patches|ellipses|regions
   export <样本ID>       导出原尺寸 PNG，默认保存到 ~/Downloads
                        --kind corrected|prediction|mask|source（默认 corrected）
                        --output /path/to/image.png
@@ -694,6 +710,123 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       return;
     }
 
+    if (command === 'profile-threshold') {
+      const id = args._[1], index = Number(args.class), coverage = Number(args.coverage);
+      if (!/^\d+$/.test(id || '') || !Number.isInteger(index) || index <= 0 || !Number.isFinite(coverage) || coverage <= 0 || coverage > 1) throw new Error('需要有效序号、--class 和 --coverage');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      if (index >= profile.rgb.length) throw new Error('--class 超出原型列表范围');
+      let override = coverage;
+      if (args.rect !== undefined) {
+        const rect = String(args.rect).split(',').map(Number);
+        if (rect.length !== 4 || rect.some(v => !Number.isFinite(v) || v < 0 || v > 512) || rect[2] < rect[0] || rect[3] < rect[1]) throw new Error('--rect 需要 512 坐标的 x1,y1,x2,y2');
+        override = { coverage, rect };
+      }
+      profile.coverage_overrides = { ...profile.coverage_overrides, [index]: override };
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已调整 ${id} 第 ${index} 类颜色覆盖阈值，请重新预览。`);
+      return;
+    }
+
+    if (command === 'profile-tune') {
+      const id = args._[1], updates = {};
+      if (!/^\d+$/.test(id || '')) throw new Error('需要有效的序号');
+      for (const [flag, key] of [['coverage', 'coverage'], ['ink-coverage', 'ink_coverage']]) {
+        if (args[flag] === undefined) continue;
+        const value = Number(args[flag]);
+        if (!Number.isFinite(value) || value <= 0 || value > 1) throw new Error(`--${flag} 需要 0 到 1 之间的数值`);
+        updates[key] = value;
+      }
+      if (!Object.keys(updates).length) throw new Error('需要 --coverage 或 --ink-coverage');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      Object.assign(profile, updates);
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已调整 ${id} 参数，请重新预览。`);
+      return;
+    }
+
+    if (command === 'profile-color') {
+      const id = args._[1], rgb = String(args.rgb || ''), index = Number(args.index);
+      if (!/^\d+$/.test(id || '') || !/^#[0-9a-f]{6}$/i.test(rgb) || !Number.isInteger(index) || index < -1 || index >= palette.length) throw new Error('需要有效的序号、--rgb #RRGGBB 和 --index');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      profile.rgb.push([1,3,5].map(start => parseInt(rgb.slice(start, start + 2), 16)));
+      profile.indices.push(index);
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已追加 ${id} 颜色映射，请重新预览。`);
+      return;
+    }
+
+    if (command === 'profile-label') {
+      const id = args._[1], size = Number(args.size), label = {
+        text: String(args.text || '').toUpperCase(), at: String(args.at || '').split(',').map(Number),
+        clear: String(args.clear || '').split(',').map(Number), color: Number(args.color), background: Number(args.background),
+      };
+      if (!/^\d+$/.test(id || '') || ![24,52,78,104].includes(size) || !/^[A-Z ]+$/.test(label.text) || label.at.length !== 2 || label.clear.length !== 4 || [...label.at, ...label.clear].some(v => !Number.isInteger(v) || v < 0 || v >= size) || label.clear[2] < label.clear[0] || label.clear[3] < label.clear[1] || label.at[0] < label.clear[0] || label.at[1] < label.clear[1] || label.at[0] + label.text.length * 4 - 2 > label.clear[2] || label.at[1] + 4 > label.clear[3] || ![label.color,label.background].every(v => Number.isInteger(v) && v >= -1 && v < palette.length)) throw new Error('需要有效的 --size、英文 --text、--at、--clear、--background 和 --color，文字必须放得进清理区域');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      profile.sizes ??= {};
+      const config = profile.sizes[size] ??= {};
+      if (config.grid) throw new Error('此尺寸已有手工 grid，请在固定像素稿中修改文字');
+      config.labels = [...(config.labels || []), label];
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已保存 ${id} 的像素标签，请重新预览。`);
+      return;
+    }
+
+    if (command === 'profile-fit') {
+      const id = args._[1], size = Number(args.size || 24), padding = Number(args.padding ?? 1);
+      if (!/^\d+$/.test(id || '') || ![24, 52, 78, 104].includes(size) || !Number.isInteger(padding) || padding < 0 || padding >= size / 2) throw new Error('需要有效的序号、--size 和 --padding');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      const grid = profile.sizes?.[size]?.grid;
+      if (!grid || grid.length !== size || grid.some(row => row.length !== size)) throw new Error('该尺寸需要已有的手工 grid');
+      const pixels = grid.flatMap((row, y) => row.flatMap((value, x) => value >= 0 ? [[x, y]] : []));
+      if (!pixels.length) throw new Error('像素稿为空');
+      const x1 = Math.min(...pixels.map(p => p[0])), x2 = Math.max(...pixels.map(p => p[0]));
+      const y1 = Math.min(...pixels.map(p => p[1])), y2 = Math.max(...pixels.map(p => p[1]));
+      const width = x2 - x1 + 1, height = y2 - y1 + 1, scale = (size - padding * 2) / Math.max(width, height);
+      const w = Math.max(1, Math.round(width * scale)), h = Math.max(1, Math.round(height * scale));
+      const ox = Math.floor((size - w) / 2), oy = Math.floor((size - h) / 2);
+      const result = Array.from({ length: size }, () => Array(size).fill(-1));
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) result[oy + y][ox + x] = grid[y1 + Math.min(height - 1, Math.floor((y + .5) * height / h))][x1 + Math.min(width - 1, Math.floor((x + .5) * width / w))];
+      profile.sizes[size].grid = result;
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已调整 ${id} 的 ${size} 像素主体大小，请重新预览。`);
+      return;
+    }
+
+    if (command === 'profile-rays') {
+      const id = args._[1];
+      const center = String(args.center || '').split(',').map(Number);
+      const rays = { center, clear_radius: Number(args.clear), inner: Number(args.inner), outer: Number(args.outer), count: Number(args.count || 14), width: Number(args.width || 4), color: Number(args.color) };
+      if (!/^\d+$/.test(id || '') || center.length !== 2 || center.some(v => !Number.isFinite(v) || v < 0 || v > 512) || ![rays.clear_radius, rays.inner, rays.outer, rays.count, rays.width, rays.color].every(Number.isFinite) || rays.clear_radius <= 0 || rays.inner <= rays.clear_radius || rays.outer <= rays.inner || !Number.isInteger(rays.count) || rays.count < 3 || rays.count > 100 || rays.width <= 0 || !Number.isInteger(rays.color) || rays.color < 0 || rays.color >= palette.length) throw new Error('需要有效的 --center x,y --clear 半径 --inner 半径 --outer 半径 --color 索引');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      if (args.size) {
+        const size = Number(args.size);
+        if (![24, 52, 78, 104].includes(size)) throw new Error('--size 只能为 24、52、78、104');
+        profile.sizes ??= {};
+        profile.sizes[size] = { ...profile.sizes[size], rays };
+      } else profile.rays = rays;
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已保存 ${id} 放射线，请重新预览。`);
+      return;
+    }
+
+    if (command === 'profile-pop') {
+      const id = args._[1], kind = args.kind;
+      if (!/^\d+$/.test(id || '') || !['strokes', 'patches', 'ellipses', 'regions'].includes(kind)) throw new Error('需要序号及 --kind strokes|patches|ellipses|regions');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      if (!profile[kind]?.length) throw new Error('该操作列表为空');
+      profile[kind].pop();
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已撤销 ${id} 最后一项 ${kind}，请重新预览。`);
+      return;
+    }
+
     if (command === 'profile-region') {
       const id = args._[1], color = Number(args.color);
       const points = String(args.points || '').split(';').map(p => p.split(',').map(Number));
@@ -744,7 +877,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       if (!/^\d+$/.test(id || '') || args.color === undefined || !Number.isInteger(color) || color < 0 || color >= palette.length || !Number.isFinite(width) || width <= 0 || width > 512 || points.length < 2 || points.some(p => p.length !== 2 || p.some(v => !Number.isFinite(v) || v < 0 || v > 512))) throw new Error('需要有效的序号、--points、--color 和 --width');
       const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
       const profile = JSON.parse(await readFile(file, 'utf8'));
-      profile.strokes = [...(profile.strokes || []), { points, color, width }];
+      profile.strokes = [...(profile.strokes || []), { points, color, width, ...(args.extend ? { extend: true } : {}) }];
       await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
       console.log(`已追加 ${id} 细线，请重新预览。`);
       return;

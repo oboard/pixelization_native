@@ -34,6 +34,22 @@ REVIEWS = Path(tempfile.gettempdir()) / "pixel_annotation_reviews" / "recipes"
 PALETTE = list(json.loads((ROOT / "webui/src/app/colorSystemMapping.json").read_text()))
 SIZES = (24, 52, 78, 104)
 PROFILES = ROOT / 'scripts' / 'annotation_profiles'
+PIXEL_FONT = {
+    'A': ['010','101','111','101','101'], 'B': ['110','101','110','101','110'],
+    'C': ['011','100','100','100','011'], 'D': ['110','101','101','101','110'],
+    'E': ['111','100','110','100','111'], 'F': ['111','100','110','100','100'],
+    'G': ['011','100','101','101','011'], 'H': ['101','101','111','101','101'],
+    'I': ['111','010','010','010','111'], 'J': ['001','001','001','101','010'],
+    'K': ['101','101','110','101','101'], 'L': ['100','100','100','100','111'],
+    'M': ['101','111','111','101','101'], 'N': ['101','111','111','111','101'],
+    'O': ['010','101','101','101','010'], 'P': ['110','101','110','100','100'],
+    'Q': ['010','101','101','111','011'], 'R': ['110','101','110','101','101'],
+    'S': ['011','100','010','001','110'], 'T': ['111','010','010','010','010'],
+    'U': ['101','101','101','101','111'], 'V': ['101','101','101','101','010'],
+    'W': ['101','101','111','111','101'], 'X': ['101','101','010','101','101'],
+    'Y': ['101','101','010','010','010'], 'Z': ['111','001','010','100','111'],
+    ' ': ['000'] * 5,
+}
 RECIPE_NAMES = {
     2: "pink starfish with raised right arm",
     10: "solid yellow star",
@@ -740,7 +756,7 @@ def flat_classes(source: np.ndarray, size: int, profile: dict) -> np.ndarray:
     labels = ((source.astype(np.float32)[:, :, None, :] - prototypes) ** 2).sum(3).argmin(2)
     # Neutral antialias pixels on black/white edges must not become a
     # saturated accent merely because its RGB distance is smaller.
-    neutral_classes = np.flatnonzero(np.ptp(prototypes, axis=1) < 10)
+    neutral_classes = np.flatnonzero(np.ptp(prototypes, axis=1) < 25)
     if len(neutral_classes) >= 2:
         neutral_pixels = np.ptp(source.astype(np.float32), axis=2) < 10
         values = source[neutral_pixels].astype(np.float32)
@@ -771,6 +787,16 @@ def flat_classes(source: np.ndarray, size: int, profile: dict) -> np.ndarray:
     dominant = fractions[1:].argmax(0) + 1
     result = np.full((size, size), -1, dtype=np.int16)
     result[present] = np.array(colors, dtype=np.int16)[dominant[present]]
+    for index, override in profile.get('coverage_overrides', {}).items():
+        index = int(index)
+        threshold = override['coverage'] if isinstance(override, dict) else override
+        selected = present & (fractions[index] >= threshold)
+        if isinstance(override, dict) and override.get('rect'):
+            x1, y1, x2, y2 = [round(v * size / 512) for v in override['rect']]
+            area = np.zeros((size, size), dtype=bool)
+            area[y1:y2 + 1, x1:x2 + 1] = True
+            selected &= area
+        result[selected] = colors[index]
     if ink is not None:
         result[present & (fractions[ink] >= profile['ink_coverage'])] = colors[ink]
     if profile.get('outline') and ink is not None:
@@ -797,7 +823,10 @@ def flat_classes(source: np.ndarray, size: int, profile: dict) -> np.ndarray:
         points = [(min(size - 1, round(x * (size - 1) / 511)),
                    min(size - 1, round(y * (size - 1) / 511))) for x, y in stroke['points']]
         ImageDraw.Draw(mask).line(points, fill=255, width=max(1, round(stroke['width'] * size / 512)))
-        result[(np.asarray(mask) > 0) & (result >= 0)] = stroke['color']
+        painted = np.asarray(mask) > 0
+        if not stroke.get('extend'):
+            painted &= result >= 0
+        result[painted] = stroke['color']
     if profile.get('ellipses'):
         art = Image.fromarray(result.astype(np.int32), 'I')
         draw = ImageDraw.Draw(art)
@@ -808,8 +837,8 @@ def flat_classes(source: np.ndarray, size: int, profile: dict) -> np.ndarray:
             box[3] = max(box[1], box[3])
             # A three-cell circle becomes a cross. Use an even diameter for
             # tiny filled circles so eyes have rounded corners and a center.
-            circle_like = abs((ellipse['rect'][2] - ellipse['rect'][0]) -
-                              (ellipse['rect'][3] - ellipse['rect'][1])) <= 2
+            axes = [ellipse['rect'][2] - ellipse['rect'][0], ellipse['rect'][3] - ellipse['rect'][1]]
+            circle_like = min(axes) > 0 and max(axes) / min(axes) <= 1.4
             if ellipse['color'] == ellipse['outline'] and circle_like:
                 for lo, hi in ((0, 2), (1, 3)):
                     diameter = box[hi] - box[lo] + 1
@@ -818,6 +847,31 @@ def flat_classes(source: np.ndarray, size: int, profile: dict) -> np.ndarray:
             draw.ellipse(box, fill=ellipse['color'], outline=ellipse['outline'],
                          width=max(1, round(ellipse['width'] * size / 512)))
         result = np.asarray(art, dtype=np.int16).copy()
+    if profile.get('rays'):
+        rays = profile['rays']
+        cx, cy = np.array(rays['center']) * size / 512
+        connected = Image.fromarray((result >= 0).astype(np.uint8), 'L').copy()
+        ImageDraw.floodfill(connected, (round(cx), round(cy)), 2)
+        result[np.asarray(connected) != 2] = -1
+        yy, xx = np.indices(result.shape)
+        result[(xx - cx) ** 2 + (yy - cy) ** 2 > (rays['clear_radius'] * size / 512) ** 2] = -1
+        art = Image.fromarray(result.astype(np.int32), 'I')
+        draw = ImageDraw.Draw(art)
+        for angle in np.linspace(-np.pi / 2, 3 * np.pi / 2, rays['count'], endpoint=False):
+            points = [(round(cx + radius * size / 512 * np.cos(angle)),
+                       round(cy + radius * size / 512 * np.sin(angle)))
+                      for radius in (rays['inner'], rays['outer'])]
+            draw.line(points, fill=rays['color'], width=max(1, round(rays['width'] * size / 512)))
+        result = np.asarray(art, dtype=np.int16).copy()
+    for label in profile.get('labels', []):
+        x1, y1, x2, y2 = label['clear']
+        result[y1:y2 + 1, x1:x2 + 1] = label['background']
+        ox, oy = label['at']
+        for i, char in enumerate(label['text']):
+            for y, row in enumerate(PIXEL_FONT[char]):
+                for x, bit in enumerate(row):
+                    if bit == '1':
+                        result[oy + y, ox + i * 4 + x] = label['color']
     return result
 
 
