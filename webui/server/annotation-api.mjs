@@ -1,3 +1,4 @@
+import { clientApi } from './annotation-client-api.mjs';
 import { link, mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -5,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
-import { getImage, getMeta, getSample, listReview, listSamples, nextAutoId, nextQueueOrder, putImage, putMeta, putSample, setQueueOrder, transaction } from './annotation-db.mjs';
+import { getImage, getMeta, getSample, listReview, listReviewReasons, listSamples, nextAutoId, nextQueueOrder, putImage, putMeta, putSample, setQueueOrder, transaction } from './annotation-db.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dataRoot = path.resolve(process.env.PIXEL_ANNOTATION_DATA_ROOT || path.join(root, 'data'));
@@ -209,9 +210,13 @@ export async function annotationApi(req, res) {
   const url = new URL(req.url, 'http://localhost');
   if (!url.pathname.startsWith('/api/annotation/')) return false;
   try {
+    if (await clientApi(req, res, { url, dataRoot, projectRoot, palette, body, json })) return true;
     await ensureFolders();
     const segments = url.pathname.split('/').filter(Boolean);
     if (segments[2] === 'palette' && req.method === 'GET') return json(res, 200, palette) || true;
+    if (segments[2] === 'review' && segments[3] === 'reasons' && segments.length === 4 && req.method === 'GET') {
+      json(res, 200, listReviewReasons()); return true;
+    }
     if (segments[2] === 'review' && (segments.length === 3 || segments[3] === 'history') && req.method === 'GET') {
       const historyMode = segments[3] === 'history';
       const size = url.searchParams.get('size') || '';

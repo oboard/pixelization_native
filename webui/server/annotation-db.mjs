@@ -158,3 +158,48 @@ export function listReview({ offset, limit, size, historyMode }) {
   const items = rows.map(row => ({ ...row, review_history: historyMode ? JSON.parse(row.review_history || '[]') : undefined }));
   return { items, total, offset, limit };
 }
+
+export function listReviewReasons() {
+  const reasons = db.prepare(`
+    SELECT trim(json_extract(event.value, '$.reason')) AS reason,
+      count(*) AS count,
+      max(coalesce(json_extract(event.value, '$.timestamp'), '')) AS last_used
+    FROM samples AS sample, json_each(sample.review_history) AS event
+    WHERE sample.history_count > 0
+      AND json_extract(event.value, '$.to') = 'unqualified'
+      AND length(trim(coalesce(json_extract(event.value, '$.reason'), ''))) > 0
+    GROUP BY trim(json_extract(event.value, '$.reason'))
+  `).all();
+  const popular = [...reasons].sort((a, b) =>
+    b.count - a.count || b.last_used.localeCompare(a.last_used) || a.reason.localeCompare(b.reason, 'zh-CN')).slice(0, 5);
+  const popularReasons = new Set(popular.map(item => item.reason));
+  const recent = reasons.filter(item => !popularReasons.has(item.reason))
+    .sort((a, b) => b.last_used.localeCompare(a.last_used) || a.reason.localeCompare(b.reason, 'zh-CN'))
+    .slice(0, 5);
+  return { popular, recent };
+}
+
+// CLI management queries stay on the server; clients never send SQL.
+export function clientQueue({ size = '', status = '', query = '', offset = 0, limit = 20 } = {}) {
+  const filters = ["(? = '' OR width = ?)", "(? = '' OR status = ?)", 'instr(lower(id), ?) > 0'];
+  const args = [size, Number(size) || 0, status === 'all' ? '' : status, status, query.toLowerCase()];
+  const where = filters.join(' AND ');
+  const counts = db.prepare(`SELECT count(*) AS total,
+    sum(status='pending') AS pending, sum(status='human_edited') AS edited,
+    sum(status='qualified') AS accepted FROM samples`).get();
+  const total = db.prepare(`SELECT count(*) AS total FROM samples WHERE ${where}`).get(...args).total;
+  const items = db.prepare(`SELECT id,width,height,status,changed_pixels,model_version FROM samples
+    WHERE ${where} ORDER BY CASE WHEN status='unqualified' THEN 0 ELSE 1 END, queue_order, sort_key LIMIT ? OFFSET ?`)
+    .all(...args, limit, offset);
+  return { counts, total, items, offset, limit };
+}
+export function clientNext(size = '') {
+  return db.prepare(`SELECT id FROM samples
+    WHERE (status='unqualified' OR (status='unmodified' AND has_corrected=0)) AND (?='' OR width=?)
+    ORDER BY CASE WHEN status='unqualified' THEN 0 ELSE 1 END, queue_order, sort_key LIMIT 1`)
+    .get(size, Number(size) || 0) || null;
+}
+export function getAsset(name) { return db.prepare('SELECT content FROM assets WHERE path=?').get(name)?.content || null; }
+export function putAsset(name, content) {
+  db.prepare('INSERT INTO assets(path,content) VALUES (?,?) ON CONFLICT(path) DO UPDATE SET content=excluded.content').run(name, content);
+}

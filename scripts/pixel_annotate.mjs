@@ -5,8 +5,6 @@ import path from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { DatabaseSync } from 'node:sqlite';
-import { deflateSync, inflateSync } from 'node:zlib';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,51 +12,63 @@ const projectRoot = path.resolve(__dirname, '..');
 const defaultDataRoot = path.join(projectRoot, 'webui/data');
 const mappingFile = path.join(projectRoot, 'webui/src/app/colorSystemMapping.json');
 let activeDataRoot = defaultDataRoot;
-let annotationDb;
-
-function database() {
-  if (!annotationDb) {
-    annotationDb = new DatabaseSync(path.join(activeDataRoot, 'annotation.sqlite3'));
-    annotationDb.exec('PRAGMA busy_timeout = 5000');
-    if (!annotationDb.prepare('PRAGMA table_info(samples)').all().some(column => column.name === 'queue_order')) {
-      annotationDb.exec('ALTER TABLE samples ADD COLUMN queue_order INTEGER NOT NULL DEFAULT 0');
-    }
+let serverUrl = process.env.PIXEL_ANNOTATION_SERVER || 'http://localhost:4173';
+const revisions = new Map();
+const pendingWrites = new Map();
+async function api(resource, options = {}) {
+  const response = await fetch(`${serverUrl.replace(/\/$/, '')}/api/annotation/client/${resource}`, {
+    ...options, headers: { 'Content-Type': 'application/json',
+      ...(process.env.PIXEL_ANNOTATION_TOKEN ? { Authorization: `Bearer ${process.env.PIXEL_ANNOTATION_TOKEN}` } : {}), ...options.headers },
+    signal: AbortSignal.timeout(120000),
+  });
+  if (!response.ok) {
+    const details = await response.json().catch(() => ({}));
+    const error = new Error(details.error || `HTTP ${response.status}`);
+    if (response.status === 404) error.code = 'ENOENT';
+    throw error;
   }
-  return annotationDb;
+  return response.json();
 }
-
 function storedPath(file) {
+  const profile = path.relative(path.join(projectRoot, 'scripts/annotation_profiles'), file);
+  if (!profile.startsWith('..') && !path.isAbsolute(profile) && /^\d+\.json$/.test(profile))
+    return { kind: 'profiles', id: profile.slice(0, -5) };
   const relative = path.relative(activeDataRoot, file);
   if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
   const [kind, name] = relative.split(path.sep);
-  if (!['indices', 'meta', 'predictions', 'corrected', 'edit_masks'].includes(kind) || !name) return null;
+  if (!['sources', 'indices', 'meta', 'predictions', 'corrected', 'edit_masks'].includes(kind) || !name) return null;
   return { kind, id: name.replace(/\.(json|png)$/, '') };
 }
-
-function missing(file) {
-  const error = new Error(`ENOENT: ${file}`);
-  error.code = 'ENOENT';
-  throw error;
-}
-
 async function readFile(file, encoding) {
   const stored = storedPath(file);
   if (!stored) return fsReadFile(file, encoding);
-  const row = stored.kind === 'indices'
-    ? database().prepare('SELECT record AS content FROM samples WHERE id=?').get(stored.id)
-    : stored.kind === 'meta'
-      ? database().prepare('SELECT json AS content FROM metadata WHERE id=?').get(stored.id)
-      : database().prepare('SELECT png AS content FROM images WHERE id=? AND kind=?').get(stored.id, stored.kind);
-  if (!row) missing(file);
-  const content = stored.kind === 'indices' ? inflateSync(row.content) : row.content;
-  return encoding ? content.toString(encoding) : Buffer.from(content);
+  const { kind, id } = stored;
+  const key = `${kind}/${id}`;
+  const result = await api(`resources/${key}`);
+  revisions.set(key, result.revision);
+  const content = Buffer.from(result.content, 'base64');
+  return encoding ? content.toString(encoding) : content;
 }
-
 async function readdir(folder) {
   if (path.resolve(folder) === path.join(activeDataRoot, 'indices')) {
-    return database().prepare('SELECT id FROM samples ORDER BY sort_key').all().map(row => `${row.id}.json`);
+    const ids = [];
+    for (let offset = 0;; offset += 200) {
+      const page = await api(`queue?limit=200&offset=${offset}`);
+      ids.push(...page.items.map(row => `${row.id}.json`));
+      if (offset + page.items.length >= page.total) break;
+    }
+    return ids;
   }
   return fsReaddir(folder);
+}
+async function flushSample(id) {
+  const writes = pendingWrites.get(id);
+  if (!writes?.length) return;
+  const result = await api(`samples/${id}`, { method: 'PUT', body: JSON.stringify({
+    expected_revision: revisions.get(`indices/${id}`), writes,
+  }) });
+  revisions.set(`indices/${id}`, result.revision);
+  pendingWrites.delete(id);
 }
 
 // Import pngjs
@@ -136,36 +146,19 @@ function colorDesc(index) {
 async function atomicWrite(file, content) {
   const stored = storedPath(file);
   if (stored) {
-    const db = database();
-    if (stored.kind === 'indices') {
-      const record = JSON.parse(content);
-      const status = record.status || (record.corrected_indices ? 'pending' : 'unmodified');
-      const history = Array.isArray(record.review_history) && record.review_history.length
-        ? record.review_history
-        : ['qualified', 'unqualified'].includes(status)
-          ? [{ from: null, to: status, reason: record.review_reason || '', timestamp: record.reviewed_at || null }]
-          : [];
-      const sortKey = record.id.replace(/\d+/g, number => number.padStart(12, '0'));
-      db.prepare(`INSERT INTO samples (id, sort_key, width, height, model_version, status,
-        changed_pixels, reviewed_at, review_reason, review_history, history_count,
-        has_corrected, has_meta, record)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT has_meta FROM samples WHERE id=?), 0), ?)
-        ON CONFLICT(id) DO UPDATE SET width=excluded.width, height=excluded.height,
-        model_version=excluded.model_version, status=excluded.status, changed_pixels=excluded.changed_pixels,
-        reviewed_at=excluded.reviewed_at, review_reason=excluded.review_reason,
-        review_history=excluded.review_history, history_count=excluded.history_count,
-        has_corrected=excluded.has_corrected, record=excluded.record`).run(
-          record.id, sortKey, record.width, record.height, record.model_version, status,
-          record.changed_pixels || 0, record.reviewed_at || null, record.review_reason || null,
-          JSON.stringify(history), history.length, Number(Boolean(record.corrected_indices)),
-          record.id, deflateSync(JSON.stringify(record), { level: 1 }));
-    } else if (stored.kind === 'meta') {
-      db.prepare('INSERT INTO metadata (id,json) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET json=excluded.json')
-        .run(stored.id, String(content));
-      db.prepare('UPDATE samples SET has_meta=1 WHERE id=?').run(stored.id);
+    const { kind, id } = stored;
+    const content64 = Buffer.from(content).toString('base64');
+    if (kind === 'profiles') {
+      const key = `${kind}/${id}`;
+      const result = await api(`resources/${key}`, { method: 'PUT', body: JSON.stringify({
+        content: content64, expected_revision: revisions.get(key) ?? null,
+      }) });
+      revisions.set(key, result.revision);
     } else {
-      db.prepare('INSERT INTO images (id,kind,png) VALUES (?,?,?) ON CONFLICT(id,kind) DO UPDATE SET png=excluded.png')
-        .run(stored.id, stored.kind, content);
+      const writes = pendingWrites.get(id) || [];
+      writes.push({ kind, content: content64 });
+      pendingWrites.set(id, writes);
+      if (kind === 'indices') await flushSample(id);
     }
     return;
   }
@@ -502,7 +495,8 @@ async function generateSideBySidePreview(dataRoot, sampleRecord, outputPath) {
   let sourcePng;
   try {
     sourcePng = PNG.sync.read(await readFile(sourcePath));
-  } catch {
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
     sourcePng = new PNG({ width: 256, height: 256 });
     sourcePng.data.fill(240);
   }
@@ -576,14 +570,24 @@ async function main() {
   const command = args._[0] || 'help';
   const dataRoot = args['data-dir'] || defaultDataRoot;
   activeDataRoot = path.resolve(dataRoot);
+  serverUrl = args.server || serverUrl;
 
   try {
+    if (command !== 'help') {
+      const remotePalette = await api('palette');
+      palette.splice(0, palette.length, ...remotePalette.map((color, index) => ({ ...color, index, hex: color.hex.toUpperCase(),
+        rgb: [1,3,5].map(at => parseInt(color.hex.slice(at, at+2),16)) })));
+      codeToColor.clear(); hexToColor.clear();
+      for (const color of palette) { codeToColor.set(color.code.toUpperCase(), color); hexToColor.set(color.hex, color); }
+    }
     if (command === 'help') {
       console.log(`
 Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
 ==============================================
 用法:
   node scripts/pixel_annotate.mjs <command> [options]
+  --server URL        服务地址（或 PIXEL_ANNOTATION_SERVER，默认 http://localhost:4173）
+  --data-dir PATH     本地工作目录；不再访问服务端数据目录
 
 常用命令:
   profile-threshold <序号> 单独调整一种原图颜色的覆盖阈值
@@ -941,7 +945,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       if (profile.ink !== undefined && (!Number.isInteger(profile.ink) || profile.ink < 1 || profile.ink >= entries.length)) throw new Error('--ink 必须是非背景颜色的位置，从 0 开始');
       if (profile.enclosed_white !== undefined && (!Number.isInteger(profile.enclosed_white) || profile.enclosed_white < 0 || profile.enclosed_white >= palette.length)) throw new Error('--enclosed-white 必须是有效色板索引');
       const dir = path.join(projectRoot, 'scripts/annotation_profiles');
-      await mkdir(dir, { recursive: true });
+      try { await readFile(path.join(dir, `${id}.json`)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
       await atomicWrite(path.join(dir, `${id}.json`), JSON.stringify(profile, null, 2) + '\n');
       console.log(`已保存 ${id} 配置；运行 recipe-preview ${id} 检查四种尺寸，再 recipe-apply ${id} 送审。`);
       return;
@@ -959,7 +963,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       const python = process.env.PYTHON || 'python3';
       const recipeScript = path.join(projectRoot, 'scripts/pixel_annotation_recipes.py');
       const mode = command === 'recipe-list' ? 'list' : command === 'recipe-preview' ? 'preview' : 'apply';
-      const pythonArgs = [recipeScript, mode, ...ids, '--sizes', ...sizes, '--data-dir', dataRoot];
+      const pythonArgs = [recipeScript, mode, ...ids, '--sizes', ...sizes, '--data-dir', dataRoot, '--server', serverUrl];
       if (args.force) pythonArgs.push('--force');
       const result = spawnSync(python, pythonArgs, { cwd: projectRoot, stdio: 'inherit' });
       if (result.error) throw result.error;
@@ -973,22 +977,9 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       const search = (args.search || '').trim().toLowerCase();
       const limit = Number(args.limit || 20);
       const offset = Number(args.offset || 0);
-      const db = database();
-      const counts = db.prepare(`SELECT count(*) AS total,
-        sum(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
-        sum(CASE WHEN status='human_edited' THEN 1 ELSE 0 END) AS edited,
-        sum(CASE WHEN status='qualified' THEN 1 ELSE 0 END) AS accepted FROM samples`).get();
-      const filters = [];
-      const values = [];
-      if (sizeFilter) { filters.push('width = ?'); values.push(Number(sizeFilter)); }
-      if (statusFilter && statusFilter !== 'all') { filters.push('status = ?'); values.push(statusFilter); }
-      if (search) { filters.push('instr(lower(id), ?) > 0'); values.push(search); }
-      const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
-      const matches = db.prepare(`SELECT count(*) AS total FROM samples ${where}`).get(...values).total;
-      const page = db.prepare(`SELECT id, width, height, status, changed_pixels, model_version
-        FROM samples ${where}
-        ORDER BY CASE WHEN status='unqualified' THEN 0 ELSE 1 END, queue_order, sort_key
-        LIMIT ? OFFSET ?`).all(...values, limit, offset);
+      const result = await api(`queue?${new URLSearchParams({ size: sizeFilter, status: statusFilter,
+        q: search, limit: String(limit), offset: String(offset) })}`);
+      const { counts, total: matches, items: page } = result;
 
       console.log(`\n📊 数据集统计: 总样本: ${counts.total} | 已完成: ${counts.accepted || 0} (已改: ${counts.edited || 0}, 通过: ${counts.accepted || 0}) | 待审核: ${counts.pending || 0}`);
       console.log(`🔍 筛选条件: 尺寸=${sizeFilter || '全部'}, 状态=${statusFilter || '全部'}, 匹配数=${matches}\n`);
@@ -1011,11 +1002,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
 
     if (command === 'next') {
       const sizeFilter = args.size ? String(args.size) : '';
-      const next = database().prepare(`SELECT id FROM samples
-        WHERE (status='unqualified' OR (status='unmodified' AND has_corrected=0))
-          AND (? = '' OR width = ?)
-        ORDER BY CASE WHEN status='unqualified' THEN 0 ELSE 1 END, queue_order, sort_key
-        LIMIT 1`).get(sizeFilter, Number(sizeFilter) || 0);
+      const { item: next } = await api(`next?${new URLSearchParams({ size: sizeFilter })}`);
       if (next) {
         console.log(next.id);
         return;
@@ -1454,9 +1441,9 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       console.log(`\n💾 样本 ${id} 保存成功!`);
       console.log(`- 状态: ${rec.status}`);
       console.log(`- 修改像素: ${rec.changed_pixels} 格`);
-      console.log(`- 纠错图: SQLite images/corrected/${id}`);
-      console.log(`- 编辑 Mask: SQLite images/edit_masks/${id}`);
-      console.log(`- 元数据: SQLite metadata/${id}`);
+      console.log(`- 纠错图: Server images/corrected/${id}`);
+      console.log(`- 编辑 Mask: Server images/edit_masks/${id}`);
+      console.log(`- 元数据: Server metadata/${id}`);
       console.log(`- 预览图: ${previewPath}\n`);
       return;
     }
