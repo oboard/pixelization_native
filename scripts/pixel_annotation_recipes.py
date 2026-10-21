@@ -18,9 +18,12 @@ import hashlib
 import io
 import json
 import re
-import sqlite3
+import os
+import base64
+import urllib.request
+import urllib.error
+import urllib.parse
 import tempfile
-import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -887,10 +890,27 @@ def render(indices: np.ndarray) -> Image.Image:
     return Image.fromarray(rgba, "RGBA")
 
 
-def database():
-    connection = sqlite3.connect(DATA / "annotation.sqlite3")
-    connection.execute("PRAGMA busy_timeout=5000")
-    return connection
+SERVER = os.environ.get("PIXEL_ANNOTATION_SERVER", "http://localhost:4173")
+
+
+def request(resource: str, value=None):
+    headers = {"Content-Type": "application/json"}
+    token = os.environ.get("PIXEL_ANNOTATION_TOKEN")
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    req = urllib.request.Request(SERVER.rstrip("/") + "/api/annotation/client/" + resource,
+        data=None if value is None else json.dumps(value).encode(), headers=headers,
+        method="GET" if value is None else "PUT")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        detail = json.load(error)
+        raise ValueError(f"HTTP {error.code}: {detail.get('error', 'Request failed')}") from error
+
+
+def source_bytes(recipe_id: int, size: int) -> bytes:
+    return base64.b64decode(request(f"resources/sources/{recipe_id}_{size}")["content"])
 
 
 def image_bytes(image: Image.Image) -> bytes:
@@ -899,9 +919,18 @@ def image_bytes(image: Image.Image) -> bytes:
     return output.getvalue()
 
 
-def asset(connection, name: str) -> bytes | None:
-    row = connection.execute("SELECT content FROM assets WHERE path=?", (name,)).fetchone()
-    return row[0] if row else None
+def asset(name: str) -> bytes | None:
+    try:
+        return base64.b64decode(request("assets?" + urllib.parse.urlencode({"name": name}))["content"])
+    except ValueError as error:
+        if str(error).startswith("HTTP 404:"):
+            return None
+        raise
+
+
+def put_asset(name: str, content: bytes):
+    request("assets?" + urllib.parse.urlencode({"name": name}),
+            {"content": base64.b64encode(content).decode()})
 
 
 def recipe_fingerprint(recipe_id: int, sizes: tuple[int, ...]) -> str:
@@ -911,7 +940,7 @@ def recipe_fingerprint(recipe_id: int, sizes: tuple[int, ...]) -> str:
     if profile.exists():
         digest.update(profile.read_bytes())
     for size in sizes:
-        digest.update((DATA / "sources" / f"{recipe_id}_{size}.png").read_bytes())
+        digest.update(source_bytes(recipe_id, size))
     return digest.hexdigest()
 
 
@@ -919,12 +948,12 @@ def preview(recipe_id: int, sizes: tuple[int, ...]) -> Path:
     REVIEWS.mkdir(parents=True, exist_ok=True)
     canvas = Image.new("RGB", (300 * (len(sizes) + 1), 335), "#eef2f1")
     draw = ImageDraw.Draw(canvas)
-    source = Image.open(DATA / "sources" / f"{recipe_id}_{sizes[0]}.png").convert("RGBA")
+    source = Image.open(io.BytesIO(source_bytes(recipe_id, sizes[0]))).convert("RGBA")
     source.thumbnail((300, 300), Image.Resampling.LANCZOS)
     canvas.paste(source, ((300 - source.width) // 2, (300 - source.height) // 2), source)
     draw.text((10, 310), f"{recipe_id} source", fill="#24413c")
     for column, size in enumerate(sizes, 1):
-        source_rgb = np.asarray(Image.open(DATA / "sources" / f"{recipe_id}_{size}.png").convert("RGB"))
+        source_rgb = np.asarray(Image.open(io.BytesIO(source_bytes(recipe_id, size))).convert("RGB"))
         result = render(classes(source_rgb, size, recipe_id)).resize((300, 300), Image.Resampling.NEAREST)
         cell = Image.new("RGBA", (300, 300), "#eef2f1")
         cell.alpha_composite(result)
@@ -937,29 +966,23 @@ def preview(recipe_id: int, sizes: tuple[int, ...]) -> Path:
         "sizes": list(sizes),
         "fingerprint": recipe_fingerprint(recipe_id, sizes),
     }
-    with database() as connection:
-        connection.execute("INSERT OR REPLACE INTO assets VALUES (?, ?)",
-                           (f"reviews/recipes/{output.name}", output.read_bytes()))
-        connection.execute("INSERT OR REPLACE INTO assets VALUES (?, ?)",
-                           (f"reviews/recipes/{output.stem}.json", json.dumps(manifest).encode()))
+    put_asset(f"reviews/recipes/{output.name}", output.read_bytes())
+    put_asset(f"reviews/recipes/{output.stem}.json", json.dumps(manifest).encode())
     return output
 
 
 def apply(recipe_id: int, sizes: tuple[int, ...], force: bool) -> None:
     preview_file = REVIEWS / f"{recipe_id}-{'-'.join(map(str, sizes))}.png"
-    connection = database()
     prefix = f"reviews/recipes/{preview_file.stem}"
-    if asset(connection, prefix + ".png") is None:
+    if asset(prefix + ".png") is None:
         raise ValueError(f"Review preview first: {preview_file}")
-    manifest = asset(connection, prefix + ".json")
+    manifest = asset(prefix + ".json")
     if manifest is None or json.loads(manifest).get("fingerprint") != recipe_fingerprint(recipe_id, sizes):
         raise ValueError(f"Preview is stale; regenerate and review: {preview_file}")
     for size in sizes:
         sample_id = f"{recipe_id}_{size}"
-        row = connection.execute("SELECT record FROM samples WHERE id=?", (sample_id,)).fetchone()
-        if row is None:
-            raise ValueError(f"Missing sample: {sample_id}")
-        record = json.loads(zlib.decompress(row[0]))
+        snapshot = request(f"resources/indices/{sample_id}")
+        record = json.loads(base64.b64decode(snapshot["content"]))
         if not force and (record.get("status", "unmodified") != "unmodified" or "corrected_indices" in record):
             print(f"skip {sample_id}: existing annotation or review state")
             continue
@@ -975,7 +998,7 @@ def apply(recipe_id: int, sizes: tuple[int, ...], force: bool) -> None:
                 "reason": "AI 修正后重新送审",
                 "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }]
-        source = np.asarray(Image.open(DATA / "sources" / f"{sample_id}.png").convert("RGB"))
+        source = np.asarray(Image.open(io.BytesIO(source_bytes(recipe_id, size))).convert("RGB"))
         indices = classes(source, size, recipe_id)
         flat = indices.ravel().tolist()
         if len(flat) != len(record["indices"]):
@@ -1008,33 +1031,31 @@ def apply(recipe_id: int, sizes: tuple[int, ...], force: bool) -> None:
         record.pop("reviewed_at", None)
         record.pop("review_reason", None)
         history = record.get("review_history") or []
-        with connection:
-            connection.execute("INSERT OR REPLACE INTO images VALUES (?, 'corrected', ?)", (sample_id, corrected_png))
-            connection.execute("INSERT OR REPLACE INTO images VALUES (?, 'edit_masks', ?)", (sample_id, mask_png))
-            connection.execute("INSERT OR REPLACE INTO metadata VALUES (?, ?)", (sample_id, json.dumps(metadata)))
-            connection.execute("""UPDATE samples SET status=?, changed_pixels=?, reviewed_at=?,
-                review_reason=?, review_history=?, history_count=?, has_corrected=1, has_meta=1,
-                record=? WHERE id=?""", (
-                record["status"], record["changed_pixels"], record.get("reviewed_at"),
-                record.get("review_reason"), json.dumps(history), len(history),
-                zlib.compress(json.dumps(record, separators=(",", ":")).encode(), level=1), sample_id))
+        payloads = [("corrected", corrected_png), ("edit_masks", mask_png),
+                    ("meta", json.dumps(metadata).encode()), ("indices", json.dumps(record).encode())]
+        request(f"samples/{sample_id}", {"expected_revision": snapshot["revision"], "writes": [
+            {"kind": kind, "content": base64.b64encode(content).decode()} for kind, content in payloads]})
         print(f"saved {sample_id}: {metadata['changed_pixels']} changed pixels; pending review")
-    connection.close()
 
 
 def main() -> None:
-    global DATA, REVIEWS
+    global DATA, REVIEWS, SERVER, PROFILES, PALETTE
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("list", "preview", "apply"))
     parser.add_argument("ids", type=int, nargs="*", help="source image numbers")
     parser.add_argument("--sizes", type=int, nargs="+", default=list(SIZES))
     parser.add_argument("--data-dir", type=Path, default=DATA)
+    parser.add_argument("--server", default=SERVER)
     parser.add_argument("--force", action="store_true", help="replace existing annotations")
     args = parser.parse_args()
     DATA = args.data_dir.resolve()
+    SERVER = args.server
+    PALETTE = [color["hex"] for color in request("palette")]
     REVIEWS = Path(tempfile.gettempdir()) / "pixel_annotation_reviews" / "recipes"
     if args.command == "list":
-        for recipe_id, name in RECIPE_NAMES.items():
+        remote_ids = request("profiles")["ids"]
+        names = {**RECIPE_NAMES, **{int(i): RECIPE_NAMES.get(int(i), "共享配方") for i in remote_ids}}
+        for recipe_id, name in sorted(names.items()):
             print(f"{recipe_id:>4}  {name}")
         return
     if not args.ids:
@@ -1042,11 +1063,19 @@ def main() -> None:
     sizes = tuple(dict.fromkeys(args.sizes))
     if any(size not in SIZES for size in sizes):
         parser.error(f"sizes must be selected from {SIZES}")
-    for recipe_id in args.ids:
-        if args.command == "preview":
-            print(preview(recipe_id, sizes))
-        else:
-            apply(recipe_id, sizes, args.force)
+    with tempfile.TemporaryDirectory(prefix="pixel-client-profiles-") as directory:
+        PROFILES = Path(directory)
+        for recipe_id in args.ids:
+            try:
+                content = request(f"resources/profiles/{recipe_id}")["content"]
+                (PROFILES / f"{recipe_id}.json").write_bytes(base64.b64decode(content))
+            except ValueError as error:
+                if not str(error).startswith("HTTP 404:"):
+                    raise
+            if args.command == "preview":
+                print(preview(recipe_id, sizes))
+            else:
+                apply(recipe_id, sizes, args.force)
 
 
 if __name__ == "__main__":

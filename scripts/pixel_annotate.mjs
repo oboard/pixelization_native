@@ -619,6 +619,10 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
                        --points 'x,y;x,y;...' --color <索引> --width 4
   profile-grid <序号>   保存指定尺寸的手工像素稿
                        --size 24 --rows '逐行字符，用 / 分隔' --legend '.:-1,K:189,W:184,P:244,Y:246'
+  profile-clean-fringe <序号> 清理或统一轮廓边色（--size、--colors、--keep、--passes）
+                       --to <颜色索引> 可改色而非删除，--rect 可限定 512 坐标区域
+  profile-fill-holes <序号> 填补指定尺寸像素稿内封闭的透明孔洞
+                       --size 52 --color 184 --max-pixels 128 --rect 140,180,340,310
   profile-patch <序号>  追加局部改色（坐标基于 512×512 原图）
                        --rect x1,y1,x2,y2 --from <原色板索引> --color <新色板索引>
   profile-set <序号>    保存可复用的平涂纠错参数（第一色必须是背景）
@@ -854,6 +858,70 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       profile.ellipses = [...(profile.ellipses || []), { rect, color, outline, width }];
       await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
       console.log(`已追加 ${id} 椭圆，请重新预览。`);
+      return;
+    }
+
+    if (command === 'profile-fill-holes') {
+      const id = args._[1], size = Number(args.size), color = Number(args.color);
+      const limit = Number(args['max-pixels'] ?? 16);
+      const rect = args.rect === undefined ? [0, 0, 512, 512] : String(args.rect).split(',').map(Number);
+      if (!/^\d+$/.test(id || '') || ![24, 52, 78, 104].includes(size) || args.color === undefined || !Number.isInteger(color) || color < 0 || color >= palette.length || !Number.isInteger(limit) || limit < 1 || limit > size * size || rect.length !== 4 || rect.some(v => !Number.isFinite(v) || v < 0 || v > 512) || rect[0] > rect[2] || rect[1] > rect[3]) throw new Error('需要序号、--size、--color、有效 --max-pixels 和 512 坐标 --rect');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      const grid = profile.sizes?.[size]?.grid;
+      if (!grid || grid.length !== size || grid.some(row => row.length !== size)) throw new Error('请先用 profile-grid 保存该尺寸像素稿');
+      const seen = new Set();
+      let filled = 0, holes = 0;
+      for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+        const start = y * size + x;
+        if (grid[y][x] !== -1 || seen.has(start)) continue;
+        const component = [start];
+        seen.add(start);
+        let enclosed = true, inside = true;
+        for (let i = 0; i < component.length; i++) {
+          const cy = Math.floor(component[i] / size), cx = component[i] % size;
+          if (cx === 0 || cy === 0 || cx === size - 1 || cy === size - 1) enclosed = false;
+          if (cx * 512 / size < rect[0] || cx * 512 / size > rect[2] || cy * 512 / size < rect[1] || cy * 512 / size > rect[3]) inside = false;
+          for (const [nx, ny] of [[cx - 1, cy], [cx + 1, cy], [cx, cy - 1], [cx, cy + 1]]) {
+            if (nx < 0 || ny < 0 || nx >= size || ny >= size || grid[ny][nx] !== -1) continue;
+            const key = ny * size + nx;
+            if (!seen.has(key)) { seen.add(key); component.push(key); }
+          }
+        }
+        if (!enclosed || !inside || component.length > limit) continue;
+        for (const key of component) grid[Math.floor(key / size)][key % size] = color;
+        filled += component.length; holes++;
+      }
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已填补 ${id} 的 ${size} 像素稿孔洞 ${holes} 个、${filled} 像素，请重新预览。`);
+      return;
+    }
+
+    if (command === 'profile-clean-fringe') {
+      const id = args._[1], size = Number(args.size), passes = Number(args.passes ?? 2);
+      const target = args.to === undefined ? -1 : Number(args.to);
+      const area = args.rect === undefined ? null : String(args.rect).split(',').map(Number);
+      if (!Number.isInteger(target) || target < -1 || target >= palette.length || (area && (area.length !== 4 || area.some(v => !Number.isFinite(v) || v < 0 || v > 512) || area[0] > area[2] || area[1] > area[3]))) throw new Error('--to 需要有效颜色索引，--rect 需要 512 坐标矩形');
+      const colors = String(args.colors ?? '184,0').split(',').map(Number);
+      const keep = args.keep === undefined ? [] : String(args.keep).split(';').map(rect => rect.split(',').map(Number));
+      if (!/^\d+$/.test(id || '') || ![24, 52, 78, 104].includes(size) || !Number.isInteger(passes) || passes < 1 || passes > 4 || colors.some(c => !Number.isInteger(c) || c < 0 || c >= palette.length) || keep.some(rect => rect.length !== 4 || rect.some(v => !Number.isFinite(v) || v < 0 || v > 512) || rect[0] > rect[2] || rect[1] > rect[3])) throw new Error('需要序号、--size、有效颜色及 512 坐标的 --keep 矩形（分号分隔）');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      const grid = profile.sizes?.[size]?.grid;
+      if (!grid || grid.length !== size || grid.some(row => row.length !== size)) throw new Error('请先用 profile-grid 保存该尺寸像素稿');
+      let removed = 0;
+      for (let pass = 0; pass < passes; pass++) {
+        const changes = [];
+        for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+          if (grid[y][x] === target || (area && (x * 512 / size < area[0] || x * 512 / size > area[2] || y * 512 / size < area[1] || y * 512 / size > area[3]))) continue;
+          if (!colors.includes(grid[y][x]) || keep.some(([x0, y0, x1, y1]) => x * 512 / size >= x0 && x * 512 / size <= x1 && y * 512 / size >= y0 && y * 512 / size <= y1)) continue;
+          if ([[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]].some(([nx, ny]) => nx < 0 || ny < 0 || nx >= size || ny >= size || grid[ny][nx] === -1)) changes.push([x, y]);
+        }
+        for (const [x, y] of changes) grid[y][x] = target;
+        removed += changes.length;
+      }
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已${target === -1 ? '清理' : '统一颜色'} ${id} 的 ${size} 像素稿边点 ${removed} 个，请重新预览。`);
       return;
     }
 

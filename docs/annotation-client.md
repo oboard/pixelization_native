@@ -81,3 +81,36 @@ content 为 base64；revision 为服务端计算的 SHA-256，客户端不提交
 ```sh
 node --test scripts/tests/annotation-client.test.mjs
 ```
+
+## 清理轮廓边点
+
+已有指定尺寸的 `profile-grid` 后，可以清理贴着透明背景的指定颜色：
+
+```sh
+node scripts/pixel_annotate.mjs profile-clean-fringe 14 --size 104 --colors 193 --passes 1 --keep '20,205,115,305;250,150,370,270'
+node scripts/pixel_annotate.mjs recipe-preview 14 --sizes 104
+```
+
+`--keep` 是以 512 为基准的保护矩形，多个矩形用分号分隔；用于保护手套、眼睛等原本应为白色的部分。每轮只移除四邻域接触透明背景的指定颜色，默认两轮，最多四轮。命令仅更新服务端共享配方；检查预览后再 apply。
+
+如果浅色边点属于主体轮廓，可用 `--to` 统一为轮廓色，避免删除后产生缺口。
+`--rect` 将操作限制在一个 512 坐标矩形内，可与 `--keep` 配合使用：
+
+```sh
+node scripts/pixel_annotate.mjs profile-clean-fringe 32 --size 104 --colors 186,177,184 --to 51 --rect 0,0,512,255 --passes 1
+node scripts/pixel_annotate.mjs recipe-preview 32 --sizes 104
+```
+
+改色仅作用于四邻域接触透明背景的指定颜色；眼白、发丝高光等内部颜色不受影响。
+
+## 填补封闭透明孔洞
+
+```sh
+node scripts/pixel_annotate.mjs profile-fill-holes 35 --size 104 --color 184 --max-pixels 128 --rect 140,180,340,310
+node scripts/pixel_annotate.mjs recipe-preview 35 --sizes 104
+```
+
+需要已有 `profile-grid`。命令按四邻域识别透明区域，只填补不接触画布边界、
+完全位于 `--rect` 内且像素数不超过 `--max-pixels` 的区域。
+默认大小上限为 16 像素；省略矩形时检查整幅画布。
+与外部背景连通的缺口需要单独描画；填补后查看预览，再提交待审核。
