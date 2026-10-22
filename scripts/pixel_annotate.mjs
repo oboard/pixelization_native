@@ -592,6 +592,8 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
 常用命令:
   profile-threshold <序号> 单独调整一种原图颜色的覆盖阈值
                        --class 2 --coverage 0.18（class 是原型列表序号）
+  profile-reuse <序号>  为新原图复用已有配色与覆盖阈值，不复制形状或像素稿
+                       --from <已有序号>（目标配置必须尚不存在）
   profile-tune <序号>   保留已有修正，调整颜色覆盖阈值
                        --coverage 0.45 --ink-coverage 0.18
   profile-color <序号>  追加原图颜色到固定色板的映射
@@ -733,6 +735,25 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       profile.coverage_overrides = { ...profile.coverage_overrides, [index]: override };
       await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
       console.log(`已调整 ${id} 第 ${index} 类颜色覆盖阈值，请重新预览。`);
+      return;
+    }
+
+    if (command === 'profile-reuse') {
+      const id = args._[1], from = String(args.from || '');
+      if (!/^\d+$/.test(id || '') || !/^\d+$/.test(from) || id === from) throw new Error('需要不同的目标序号和 --from 来源序号');
+      const dir = path.join(projectRoot, 'scripts/annotation_profiles');
+      const file = path.join(dir, `${id}.json`);
+      try {
+        await readFile(file);
+        throw new Error('目标配置已存在，请用 profile-tune 或 profile-color 保留已有修正');
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const source = JSON.parse(await readFile(path.join(dir, `${from}.json`), 'utf8'));
+      const profile = {};
+      for (const key of ['rgb', 'indices', 'coverage', 'ink_coverage', 'ink', 'enclosed_white']) {
+        if (Object.hasOwn(source, key)) profile[key] = source[key];
+      }
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已为 ${id} 复用 ${from} 的配色，请重新预览并单独修正形状。`);
       return;
     }
 

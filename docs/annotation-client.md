@@ -114,3 +114,14 @@ node scripts/pixel_annotate.mjs recipe-preview 35 --sizes 104
 完全位于 `--rect` 内且像素数不超过 `--max-pixels` 的区域。
 默认大小上限为 16 像素；省略矩形时检查整幅画布。
 与外部背景连通的缺口需要单独描画；填补后查看预览，再提交待审核。
+
+## 复用同角色的配色
+
+```sh
+node scripts/pixel_annotate.mjs profile-reuse 92 --from 86
+node scripts/pixel_annotate.mjs recipe-preview 92 --sizes 24,52,78,104
+```
+
+目标配置必须尚不存在。命令只复制 RGB 原型、固定色板映射、覆盖阈值、
+描边颜色与封闭白色设置；每张图的位置修正、手工像素稿和局部阈值独立维护。
+复用后仍须逐尺寸查看预览，修正新姿态的五官与轮廓，再提交待审核。
