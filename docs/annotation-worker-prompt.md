@@ -22,7 +22,7 @@ NODE_COUNT：<参与节点总数>
 
 进入项目，阅读适用的 AGENTS.md、`docs/annotation-client.md`，以及 CLI 的帮助和相关实现：
 
-- `scripts/pixel_annotate.mjs`
+- `packages/pixel-annotate/pixel_annotate.ts`
 - `scripts/pixel_annotation_recipes.py`
 - 服务端共享配方 `scripts/annotation_profiles/<原图编号>.json`
 
@@ -76,11 +76,11 @@ NODE_COUNT：<参与节点总数>
 优先使用已有命令，先查看当前帮助确认参数。常用命令包括：
 
 ```sh
-node scripts/pixel_annotate.mjs list --status unqualified --limit 100 --offset 0
-node scripts/pixel_annotate.mjs show 4236_52
-node scripts/pixel_annotate.mjs palette
-node scripts/pixel_annotate.mjs recipe-preview 4236 --sizes 24,52,78,104
-node scripts/pixel_annotate.mjs recipe-apply 4236 --sizes 24,52,78,104
+node packages/pixel-annotate/pixel_annotate.ts list --status unqualified --limit 100 --offset 0
+node packages/pixel-annotate/pixel_annotate.ts show 4236_52
+node packages/pixel-annotate/pixel_annotate.ts palette
+node packages/pixel-annotate/pixel_annotate.ts recipe-preview 4236 --sizes 24,52,78,104
+node packages/pixel-annotate/pixel_annotate.ts recipe-apply 4236 --sizes 24,52,78,104
 ```
 
 上面的编号只是命令示例，不是额外分配给你的任务。只对自己的分片执行实际修改。按具体状态和修改范围传入 `--sizes`，不要无意覆盖其余尺寸。

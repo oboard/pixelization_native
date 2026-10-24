@@ -4,11 +4,11 @@
 每种颜色通过互斥分类映射到 MARD 索引，避免颜色阈值重叠产生杂色。
 
 ```sh
-node scripts/pixel_annotate.mjs profile-set 498 --colors '#FFFFFF:-1,#FA9AFD:244,#FFFF00:246,#000000:189' --ink 3 --enclosed-white 184 --coverage 0.44 --ink-coverage 0.2
-node scripts/pixel_annotate.mjs profile-patch 498 --rect 212,273,289,302 --from 184 --color 244
-node scripts/pixel_annotate.mjs recipe-preview 498 --sizes 52,78,104
+node packages/pixel-annotate/pixel_annotate.ts profile-set 498 --colors '#FFFFFF:-1,#FA9AFD:244,#FFFF00:246,#000000:189' --ink 3 --enclosed-white 184 --coverage 0.44 --ink-coverage 0.2
+node packages/pixel-annotate/pixel_annotate.ts profile-patch 498 --rect 212,273,289,302 --from 184 --color 244
+node packages/pixel-annotate/pixel_annotate.ts recipe-preview 498 --sizes 52,78,104
 # 逐张查看预览，再提交：
-node scripts/pixel_annotate.mjs recipe-apply 498 --sizes 52,78,104
+node packages/pixel-annotate/pixel_annotate.ts recipe-apply 498 --sizes 52,78,104
 ```
 
 - `--ink` 是颜色列表中的位置（从 0 开始），不是 MARD 索引。

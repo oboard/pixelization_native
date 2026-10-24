@@ -32,13 +32,13 @@ export PIXEL_ANNOTATION_SERVER=http://management-host:4173
 export PIXEL_ANNOTATION_TOKEN=your-shared-token
 export PYTHON=/path/to/python
 
-node scripts/pixel_annotate.mjs next --size 24
-node scripts/pixel_annotate.mjs show 4236_52
-node scripts/pixel_annotate.mjs edit 4236_52 --set 10,12:189
-node scripts/pixel_annotate.mjs save 4236_52
-node scripts/pixel_annotate.mjs recipe-preview 4236 --sizes 24,52,78,104
-node scripts/pixel_annotate.mjs recipe-apply 4236 --sizes 24,52,78,104
-node scripts/pixel_annotate.mjs export 4236_52
+node packages/pixel-annotate/pixel_annotate.ts next --size 24
+node packages/pixel-annotate/pixel_annotate.ts show 4236_52
+node packages/pixel-annotate/pixel_annotate.ts edit 4236_52 --set 10,12:189
+node packages/pixel-annotate/pixel_annotate.ts save 4236_52
+node packages/pixel-annotate/pixel_annotate.ts recipe-preview 4236 --sizes 24,52,78,104
+node packages/pixel-annotate/pixel_annotate.ts recipe-apply 4236 --sizes 24,52,78,104
+node packages/pixel-annotate/pixel_annotate.ts export 4236_52
 ```
 
 也可逐条传入 `--server URL`。默认地址是 `http://localhost:4173`。
@@ -87,8 +87,8 @@ node --test scripts/tests/annotation-client.test.mjs
 已有指定尺寸的 `profile-grid` 后，可以清理贴着透明背景的指定颜色：
 
 ```sh
-node scripts/pixel_annotate.mjs profile-clean-fringe 14 --size 104 --colors 193 --passes 1 --keep '20,205,115,305;250,150,370,270'
-node scripts/pixel_annotate.mjs recipe-preview 14 --sizes 104
+node packages/pixel-annotate/pixel_annotate.ts profile-clean-fringe 14 --size 104 --colors 193 --passes 1 --keep '20,205,115,305;250,150,370,270'
+node packages/pixel-annotate/pixel_annotate.ts recipe-preview 14 --sizes 104
 ```
 
 `--keep` 是以 512 为基准的保护矩形，多个矩形用分号分隔；用于保护手套、眼睛等原本应为白色的部分。每轮只移除四邻域接触透明背景的指定颜色，默认两轮，最多四轮。命令仅更新服务端共享配方；检查预览后再 apply。
@@ -97,8 +97,8 @@ node scripts/pixel_annotate.mjs recipe-preview 14 --sizes 104
 `--rect` 将操作限制在一个 512 坐标矩形内，可与 `--keep` 配合使用：
 
 ```sh
-node scripts/pixel_annotate.mjs profile-clean-fringe 32 --size 104 --colors 186,177,184 --to 51 --rect 0,0,512,255 --passes 1
-node scripts/pixel_annotate.mjs recipe-preview 32 --sizes 104
+node packages/pixel-annotate/pixel_annotate.ts profile-clean-fringe 32 --size 104 --colors 186,177,184 --to 51 --rect 0,0,512,255 --passes 1
+node packages/pixel-annotate/pixel_annotate.ts recipe-preview 32 --sizes 104
 ```
 
 改色仅作用于四邻域接触透明背景的指定颜色；眼白、发丝高光等内部颜色不受影响。
@@ -106,8 +106,8 @@ node scripts/pixel_annotate.mjs recipe-preview 32 --sizes 104
 ## 填补封闭透明孔洞
 
 ```sh
-node scripts/pixel_annotate.mjs profile-fill-holes 35 --size 104 --color 184 --max-pixels 128 --rect 140,180,340,310
-node scripts/pixel_annotate.mjs recipe-preview 35 --sizes 104
+node packages/pixel-annotate/pixel_annotate.ts profile-fill-holes 35 --size 104 --color 184 --max-pixels 128 --rect 140,180,340,310
+node packages/pixel-annotate/pixel_annotate.ts recipe-preview 35 --sizes 104
 ```
 
 需要已有 `profile-grid`。命令按四邻域识别透明区域，只填补不接触画布边界、
@@ -118,8 +118,8 @@ node scripts/pixel_annotate.mjs recipe-preview 35 --sizes 104
 ## 复用同角色的配色
 
 ```sh
-node scripts/pixel_annotate.mjs profile-reuse 92 --from 86
-node scripts/pixel_annotate.mjs recipe-preview 92 --sizes 24,52,78,104
+node packages/pixel-annotate/pixel_annotate.ts profile-reuse 92 --from 86
+node packages/pixel-annotate/pixel_annotate.ts recipe-preview 92 --sizes 24,52,78,104
 ```
 
 目标配置必须尚不存在。命令只复制 RGB 原型、固定色板映射、覆盖阈值、

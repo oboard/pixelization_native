@@ -6,9 +6,9 @@ source. `preview` never changes annotations; `apply` requires an existing
 preview and refuses to replace an annotation unless --force is supplied.
 
 Use through the main annotation CLI:
-    node scripts/pixel_annotate.mjs recipe-list
-    node scripts/pixel_annotate.mjs recipe-preview 122
-    node scripts/pixel_annotate.mjs recipe-apply 122
+    node packages/pixel-annotate/pixel_annotate.ts recipe-list
+    node packages/pixel-annotate/pixel_annotate.ts recipe-preview 122
+    node packages/pixel-annotate/pixel_annotate.ts recipe-apply 122
 """
 
 from __future__ import annotations

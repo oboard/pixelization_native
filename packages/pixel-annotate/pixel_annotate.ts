@@ -8,14 +8,14 @@ import { spawnSync } from 'node:child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const projectRoot = path.resolve(__dirname, '..');
+const projectRoot = path.resolve(__dirname, '../..');
 const defaultDataRoot = path.join(projectRoot, 'webui/data');
 const mappingFile = path.join(projectRoot, 'webui/src/app/colorSystemMapping.json');
 let activeDataRoot = defaultDataRoot;
 let serverUrl = process.env.PIXEL_ANNOTATION_SERVER || 'http://localhost:4173';
 const revisions = new Map();
 const pendingWrites = new Map();
-async function api(resource, options = {}) {
+async function api(resource, options: RequestInit = {}) {
   const response = await fetch(`${serverUrl.replace(/\/$/, '')}/api/annotation/client/${resource}`, {
     ...options, headers: { 'Content-Type': 'application/json',
       ...(process.env.PIXEL_ANNOTATION_TOKEN ? { Authorization: `Bearer ${process.env.PIXEL_ANNOTATION_TOKEN}` } : {}), ...options.headers },
@@ -23,7 +23,7 @@ async function api(resource, options = {}) {
   });
   if (!response.ok) {
     const details = await response.json().catch(() => ({}));
-    const error = new Error(details.error || `HTTP ${response.status}`);
+    const error: NodeJS.ErrnoException = new Error(details.error || `HTTP ${response.status}`);
     if (response.status === 404) error.code = 'ENOENT';
     throw error;
   }
@@ -39,7 +39,7 @@ function storedPath(file) {
   if (!['sources', 'indices', 'meta', 'predictions', 'corrected', 'edit_masks'].includes(kind) || !name) return null;
   return { kind, id: name.replace(/\.(json|png)$/, '') };
 }
-async function readFile(file, encoding) {
+async function readFile(file: string, encoding?: BufferEncoding): Promise<any> {
   const stored = storedPath(file);
   if (!stored) return fsReadFile(file, encoding);
   const { kind, id } = stored;
@@ -71,15 +71,7 @@ async function flushSample(id) {
   pendingWrites.delete(id);
 }
 
-// Import pngjs
-let PNG;
-try {
-  const mod = await import(path.join(projectRoot, 'webui/node_modules/pngjs/lib/png.js'));
-  PNG = mod.PNG;
-} catch (e) {
-  console.error('Error importing pngjs from webui/node_modules/pngjs. Please run pnpm install in webui.');
-  process.exit(1);
-}
+import { PNG } from 'pngjs';
 
 // Digits font 3x5 for rulers
 const DIGITS = {
@@ -97,7 +89,7 @@ const DIGITS = {
 
 // Load palette
 const mapping = JSON.parse(await readFile(mappingFile, 'utf8'));
-const palette = Object.entries(mapping).map(([hex, names], index) => ({
+const palette = Object.entries(mapping as Record<string, { MARD: string }>).map(([hex, names], index) => ({
   index,
   hex: hex.toUpperCase(),
   code: names.MARD,
@@ -566,7 +558,7 @@ function parseArgs(args) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const args: Record<string, any> & { _: string[] } = parseArgs(process.argv.slice(2));
   const command = args._[0] || 'help';
   const dataRoot = args['data-dir'] || defaultDataRoot;
   activeDataRoot = path.resolve(dataRoot);
@@ -585,7 +577,7 @@ async function main() {
 Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
 ==============================================
 用法:
-  node scripts/pixel_annotate.mjs <command> [options]
+  node packages/pixel-annotate/pixel_annotate.ts <command> [options]
   --server URL        服务地址（或 PIXEL_ANNOTATION_SERVER，默认 http://localhost:4173）
   --data-dir PATH     本地工作目录；不再访问服务端数据目录
 
@@ -627,6 +619,8 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
                        --size 52 --color 184 --max-pixels 128 --rect 140,180,340,310
   profile-patch <序号>  追加局部改色（坐标基于 512×512 原图）
                        --rect x1,y1,x2,y2 --from <原色板索引> --color <新色板索引>
+  profile-edge-map <序号> --size 78 --map 184:69,82:69  按颜色修正外缘（需像素稿）
+  profile-outline <序号> --size 52 --color 198  描边最大连通主体（需像素稿）
   profile-set <序号>    保存可复用的平涂纠错参数（第一色必须是背景）
                        --colors '#FFFFFF:-1,#F29DE8:244,#FFFF00:246,#000000:189'
                        --ink 3 --enclosed-white 184 --coverage 0.44 --ink-coverage 0.24
@@ -681,23 +675,23 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
 
 示例:
   # 1. 查找下一个待标的 24 像素样本
-  node scripts/pixel_annotate.mjs next --size 24
+  node packages/pixel-annotate/pixel_annotate.ts next --size 24
 
   # 2. 生成预览并在工作区查看
-  node scripts/pixel_annotate.mjs show 8_24
+  node packages/pixel-annotate/pixel_annotate.ts show 8_24
 
   # 3. 进行修正修图 (去背景 + 修线 + 换色)
-  node scripts/pixel_annotate.mjs edit 8_24 --remove-bg --set 10,12:H07 10,13:H07
+  node packages/pixel-annotate/pixel_annotate.ts edit 8_24 --remove-bg --set 10,12:H07 10,13:H07
 
   # 4. 保存待审核标注
-  node scripts/pixel_annotate.mjs save 8_24
+  node packages/pixel-annotate/pixel_annotate.ts save 8_24
 
   # 5. 人工修图后可标为已人工修改
-  node scripts/pixel_annotate.mjs status 8_24 human_edited
+  node packages/pixel-annotate/pixel_annotate.ts status 8_24 human_edited
 
   # 6. 预览并应用一组已定义的简单图案
-  node scripts/pixel_annotate.mjs recipe-preview 122
-  node scripts/pixel_annotate.mjs recipe-apply 122
+  node packages/pixel-annotate/pixel_annotate.ts recipe-preview 122
+  node packages/pixel-annotate/pixel_annotate.ts recipe-apply 122
 `);
       return;
     }
@@ -726,7 +720,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
       const profile = JSON.parse(await readFile(file, 'utf8'));
       if (index >= profile.rgb.length) throw new Error('--class 超出原型列表范围');
-      let override = coverage;
+      let override: number | { coverage: number; rect: number[] } = coverage;
       if (args.rect !== undefined) {
         const rect = String(args.rect).split(',').map(Number);
         if (rect.length !== 4 || rect.some(v => !Number.isFinite(v) || v < 0 || v > 512) || rect[2] < rect[0] || rect[3] < rect[1]) throw new Error('--rect 需要 512 坐标的 x1,y1,x2,y2');
@@ -748,7 +742,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
         throw new Error('目标配置已存在，请用 profile-tune 或 profile-color 保留已有修正');
       } catch (error) { if (error.code !== 'ENOENT') throw error; }
       const source = JSON.parse(await readFile(path.join(dir, `${from}.json`), 'utf8'));
-      const profile = {};
+      const profile: Record<string, any> = {};
       for (const key of ['rgb', 'indices', 'coverage', 'ink_coverage', 'ink', 'enclosed_white']) {
         if (Object.hasOwn(source, key)) profile[key] = source[key];
       }
@@ -1011,6 +1005,62 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       return;
     }
 
+    if (command === 'profile-edge-map') {
+      const id = args._[1], size = Number(args.size);
+      if (!/^\d+$/.test(id || '') || ![24,52,78,104].includes(size) || typeof args.map !== 'string') throw new Error('需要序号、--size 和 --map FROM:TO,...');
+      const mapping = new Map<number, number>();
+      for (const entry of args.map.split(',')) {
+        const match = entry.trim().match(/^(\d+):(\d+)$/);
+        if (!match || Number(match[1]) >= palette.length || Number(match[2]) >= palette.length) throw new Error('无效色板映射');
+        mapping.set(Number(match[1]), Number(match[2]));
+      }
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      const grid: number[][] = profile.sizes?.[size]?.grid;
+      if (!grid || grid.length !== size || grid.some(row => row.length !== size)) throw new Error('需要已有 profile-grid 像素稿');
+      const snapshot = grid.map(row => [...row]);
+      let changed = 0;
+      for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+        const next = mapping.get(snapshot[y][x]);
+        if (next === undefined || next === snapshot[y][x]) continue;
+        const border = [[y-1,x],[y+1,x],[y,x-1],[y,x+1]].some(([yy,xx]) => yy < 0 || xx < 0 || yy >= size || xx >= size || snapshot[yy][xx] < 0);
+        if (border) { grid[y][x] = next; changed++; }
+      }
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已为 ${id}_${size} 修正 ${changed} 格边缘颜色，请重新预览。`);
+      return;
+    }
+
+    if (command === 'profile-outline') {
+      const id = args._[1], size = Number(args.size), color = Number(args.color ?? 198);
+      if (!/^\d+$/.test(id || '') || ![24,52,78,104].includes(size) || !Number.isInteger(color) || color < 0 || color >= palette.length) throw new Error('需要序号、--size 和有效 --color');
+      const file = path.join(projectRoot, 'scripts/annotation_profiles', `${id}.json`);
+      const profile = JSON.parse(await readFile(file, 'utf8'));
+      const grid: number[][] = profile.sizes?.[size]?.grid;
+      if (!grid || grid.length !== size || grid.some(row => row.length !== size)) throw new Error('需要已有 profile-grid 像素稿');
+      const seen = new Set<number>();
+      let largest: number[] = [];
+      const neighbors = (n: number) => {
+        const y = Math.floor(n / size), x = n % size;
+        return [y > 0 ? n-size : -1, y < size-1 ? n+size : -1, x > 0 ? n-1 : -1, x < size-1 ? n+1 : -1];
+      };
+      const pixel = (n: number) => grid[Math.floor(n / size)][n % size];
+      for (let n = 0; n < size*size; n++) {
+        if (seen.has(n) || pixel(n) < 0) continue;
+        const component: number[] = [], stack = [n]; seen.add(n);
+        while (stack.length) {
+          const current = stack.pop()!; component.push(current);
+          for (const next of neighbors(current)) if (next >= 0 && !seen.has(next) && pixel(next) >= 0) { seen.add(next); stack.push(next); }
+        }
+        if (component.length > largest.length) largest = component;
+      }
+      const border = largest.filter(n => neighbors(n).some(next => next < 0 || pixel(next) < 0));
+      for (const n of border) grid[Math.floor(n / size)][n % size] = color;
+      await atomicWrite(file, JSON.stringify(profile, null, 2) + '\n');
+      console.log(`已为 ${id}_${size} 最大主体补齐 ${border.length} 格轮廓，请重新预览。`);
+      return;
+    }
+
     if (command === 'profile-set') {
       const id = args._[1];
       if (!/^\d+$/.test(id || '') || typeof args.colors !== 'string') throw new Error('需要图片序号和 --colors HEX:index,...');
@@ -1022,7 +1072,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
         return { rgb: [0, 2, 4].map(i => parseInt(match[1].slice(i, i + 2), 16)), index };
       });
       if (entries.length < 2 || entries[0].index !== -1 || entries.slice(1).some(e => e.index < 0)) throw new Error('第一色必须为 -1 背景，其他颜色必须对应色板');
-      const profile = {
+      const profile: { rgb: number[][]; indices: number[]; coverage: number; ink_coverage: number; symmetry: boolean; outline: boolean; regions_only: boolean; ink?: number; enclosed_white?: number } = {
         rgb: entries.map(e => e.rgb), indices: entries.map(e => e.index),
         coverage: Number(args.coverage ?? .44), ink_coverage: Number(args['ink-coverage'] ?? .24),
         symmetry: Boolean(args.symmetry), outline: Boolean(args.outline),
@@ -1117,7 +1167,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
 
     if (command === 'show') {
       const id = args._[1];
-      if (!id) throw new Error('请指定样本 ID，例如: node scripts/pixel_annotate.mjs show 8_24');
+      if (!id) throw new Error('请指定样本 ID，例如: node packages/pixel-annotate/pixel_annotate.ts show 8_24');
       const recFile = path.join(dataRoot, 'indices', `${id}.json`);
       const rec = JSON.parse(await readFile(recFile, 'utf8'));
       const pixels = rec.corrected_indices || rec.indices;
@@ -1189,7 +1239,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       const id = args._[1];
       const nextStatus = args._[2];
       if (!id || !nextStatus || !['pending', 'human_edited'].includes(nextStatus)) {
-        throw new Error('用法: node scripts/pixel_annotate.mjs status <id> <pending|human_edited>');
+        throw new Error('用法: node packages/pixel-annotate/pixel_annotate.ts status <id> <pending|human_edited>');
       }
       const recFile = path.join(dataRoot, 'indices', `${id}.json`);
       const rec = JSON.parse(await readFile(recFile, 'utf8'));
@@ -1537,7 +1587,7 @@ Pixel Art 纠错标注 CLI 工具 (AI 协作标注助手)
       return;
     }
 
-    throw new Error(`未知命令: "${command}"。输入 node scripts/pixel_annotate.mjs help 查看使用说明。`);
+    throw new Error(`未知命令: "${command}"。输入 node packages/pixel-annotate/pixel_annotate.ts help 查看使用说明。`);
   } catch (err) {
     console.error(`\n❌ 错误: ${err.message || err}\n`);
     process.exit(1);

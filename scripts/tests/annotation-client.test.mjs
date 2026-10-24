@@ -22,7 +22,7 @@ await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
 const url = `http://127.0.0.1:${server.address().port}`;
 const env = { ...process.env, PIXEL_ANNOTATION_SERVER:url, PYTHON:process.env.PYTHON || path.join(root,'.venv/bin/python') };
 async function cli(...args) {
-  return run(process.execPath, [path.join(root,'scripts/pixel_annotate.mjs'), ...args,
+  return run(process.execPath, [path.join(root,'packages/pixel-annotate/pixel_annotate.ts'), ...args,
     '--data-dir', path.join(temporary,'node-no-data')], { env, maxBuffer:2_000_000 });
 }
 async function request(resource, value, token='test-token') {

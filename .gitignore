@@ -44,3 +44,6 @@ __pycache__/
 
 data/
 backup/
+# Node dependencies and local package caches
+node_modules/
+.pnpm-store/

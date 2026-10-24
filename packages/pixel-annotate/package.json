@@ -1,0 +1,26 @@
+{
+  "name": "@pixelization/pixel-annotate",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pixel art annotation CLI for the pixelization workspace",
+  "bin": {
+    "pixel-annotate": "./pixel_annotate.ts"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node pixel_annotate.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "pngjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "@types/node": "^24.0.0",
+    "@types/pngjs": "^6.0.5"
+  },
+  "packageManager": "pnpm@12.15.0"
+}
